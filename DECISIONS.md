@@ -132,3 +132,25 @@ Purchase intent  ↔  Razorpay order/payment  ↔  Merchant order
 
 **Date:** 2026-08-26
 **Reason:** machine-local tooling settings; may contain permission grants specific to this machine. Not part of the deliverable.
+
+## D-014 — Browser MCP verified for the shopping adapter (A-5)
+
+**Date:** 2026-08-26 · **Status: VERIFIED**
+**Tested against** a local page on `localhost:8001`, with no Razorpay involvement.
+
+| Capability | Result |
+|---|---|
+| Reach localhost | ✅ HTTP 200, page title and text read |
+| Locate interactive elements | ✅ `button "Click me" [ref_1]` |
+| Click and mutate the DOM | ✅ `MARKER_VALUE_7F3A9B` → `CLICKED_OK` |
+| **Extract structured cart data** | ✅ `[{"sku":"milk_1l","qty":2},{"sku":"banana","qty":6}]` |
+
+**Why the last row matters:** the browser adapter can implement `read_cart()`
+returning **typed data**, not scraped prose. So `cart_verifier` compares
+intent-vs-observed identically whether the cart was built through the demo-store
+API or through the browser. The shampoo ×20 catch works on both paths.
+
+**Does NOT change D-007.** Browser MCP remains an *optional* `CommerceAdapter`
+for the shopping demo. The reliable payment route is still a normal Razorpay
+Checkout page completed manually. This only means that when MCP is available,
+the visual demo is genuinely available too.

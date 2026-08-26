@@ -20,6 +20,11 @@ Always use `"$PWD"` in commands. Never the tilde form. See D-000.
 - All dependencies installed and importing: fastapi 0.141.1, sqlmodel 0.0.39,
   pydantic 2.13.4, pytest 9.1.1, hypothesis 6.165.10, razorpay 2.0.1,
   anthropic 1.0.0, httpx, python-dotenv, uvicorn.
+- **A-5 verified**: Browser MCP reads a local page, locates elements, clicks,
+  mutates the DOM, and extracts **structured** cart data. D-014.
+- **Twenty gates frozen by name** — `docs/GATES.md`.
+- **Eight interfaces frozen** — `docs/API_CONTRACTS.md`.
+- Debugging protocol and agent handoff contracts written.
 
 ## What is incomplete
 
@@ -39,14 +44,16 @@ Always use `"$PWD"` in commands. Never the tilde form. See D-000.
 | A-0 workspace path | ✅ **VERIFIED** — trailing space confirmed |
 | A-1A captured payment needs interactive checkout | ✅ **ANSWERED: yes** (docs) |
 | A-4 deps on Python 3.14 | ✅ **VERIFIED** — all installed, all import |
+| **A-5 Browser MCP** | ✅ **VERIFIED** — read, click, DOM mutation, **structured cart extraction**. See D-014 |
 | A-1B manual checkout works | ⏳ needs Razorpay keys |
 | A-2 test keys authenticate | ⏳ needs Razorpay keys |
 | A-3 settlements in test mode | ⏳ needs Razorpay keys |
-| A-5 Browser MCP reachability | ⏳ optional, not blocking |
 | A-6A order notes survive | ⏳ needs Razorpay keys |
 | A-6B payment exposes order_id | ⏳ needs Razorpay keys |
 | A-7 strict Pydantic validation | ⏳ needs Anthropic key |
 | A-8 offline testability | ⏳ requirement only; *verified* at CP-1 |
+
+**7 of 11 assumptions closed.** The 4 remaining all need credentials.
 
 ## Blocking questions
 
