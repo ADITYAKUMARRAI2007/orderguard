@@ -15,6 +15,11 @@ Verified — `git add .env` is refused and requires `-f` to override.
 - secrets committed *before* an ignore rule existed
 - generated logs containing keys
 
+### Standing rule
+
+**No command may write to `.env`.** It is edited in place only. See F-002 —
+an unguarded `cp` destroyed credentials once already.
+
 ### Final audit before submission — all five
 
 1. Search **tracked files** for `rzp_`, `sk-ant-`, `secret`

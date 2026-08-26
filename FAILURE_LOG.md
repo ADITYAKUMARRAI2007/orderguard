@@ -64,3 +64,52 @@ Yes — the same class of bug appears in CI pipelines and shell-based deploys.
 ### Remaining limitation
 `probe/` is gitignored, so the order ID is not reproducible from a fresh clone.
 Acceptable: it is a throwaway probe artefact.
+
+---
+
+## F-002 — Unconditional `cp` overwrote the user's `.env`
+
+**Date:** 2026-08-26
+**Checkpoint:** CP-0
+**Command:** `cp .env.example .env` (during the Gemini provider switch)
+
+### What I expected
+To refresh the `.env` template with provider-neutral field names.
+
+### What happened
+`.env` was overwritten unconditionally, destroying any credentials already
+pasted into it. The earlier command in the same checkpoint was guarded
+(`test -f .env || cp .env.example .env`) — the second one was not. Detected when
+a field-status check showed all three credential fields empty after the user
+reported having filled them in.
+
+### Root cause
+Two commands doing the same job, only one of them idempotent. The unguarded
+variant silently destroyed user data instead of refusing.
+
+### How I proved the root cause
+`awk` field-status dump showed `RZP_KEY_ID`, `RZP_KEY_SECRET` and `LLM_API_KEY`
+all empty, while `LLM_PROVIDER` and `LLM_MODEL` held the template defaults —
+exactly the signature of a fresh copy from `.env.example`.
+
+### Fix
+`.env` is never written by a command again. Values are edited in place with
+`Edit`, or the user edits the file directly. Any future template refresh must
+merge, never replace.
+
+### Regression test
+Not code — a standing rule recorded here and in `SECURITY.md`:
+**no command may write to `.env`.**
+
+### What I learned
+Destructive commands must be idempotent by default. `cp` over a credentials file
+is a data-loss operation and should never appear unguarded. A guarded variant
+existing three commands earlier made the unguarded one look safe by association.
+
+### Could this happen in production?
+Yes. This is the classic deploy-script bug that overwrites production config with
+a template.
+
+### Remaining limitation
+If the Razorpay secret was pasted before the overwrite, it cannot be recovered —
+Razorpay displays the secret only once. A new test key must be generated.
