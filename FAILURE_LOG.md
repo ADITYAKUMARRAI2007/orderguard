@@ -213,3 +213,45 @@ scenario D-015 flagged. It happened the same day the decision was recorded.
 Why the project is denied access is unknown — possibly regional, account-age, or
 unaccepted terms. Not worth diagnosing on a 10-day clock when a working
 alternative takes 2 minutes.
+
+---
+
+## F-005 — urllib got 403 where curl succeeded (User-Agent block)
+
+**Date:** 2026-08-26 · **Checkpoint:** CP-0 · **Command:** A-7 via `urllib.request`
+
+### What I expected
+`urllib.request.urlopen` to reach Groq the same way `curl` had, seconds earlier.
+
+### What happened
+`HTTPError: HTTP Error 403: Forbidden` — while the identical request via `curl`
+returned HTTP 200 with valid content.
+
+### Root cause
+Groq's edge rejects Python's default `urllib` User-Agent. Not a key problem, not
+a model problem, not a payload problem — a client-identity problem.
+
+### How I proved it
+Same URL, same headers, same body, same key, two clients: `curl` → 200,
+`urllib` → 403. Switching to `httpx` → 200 immediately.
+
+### Fix
+Use `httpx` for all HTTP in this project. Already a dependency; sets a normal
+User-Agent; also gives real timeout control.
+
+### Regression test
+Not code — a standing rule: **`httpx` only. No `urllib.request` anywhere.**
+
+### What I learned
+Third in a row where the *client* obscured the truth (F-004: SDK hid a 404 behind
+a 2-minute hang; here urllib turned a working request into a 403). The debugging
+protocol's "locate the boundary" step earned its place — the boundary was the
+HTTP client each time, not the API.
+
+### Could this happen in production?
+Yes. UA-based filtering is common at CDN edges and fails closed with a
+misleading status code.
+
+### Remaining limitation
+Not investigated whether a custom UA on `urllib` would also work. Irrelevant —
+`httpx` is the standing choice.

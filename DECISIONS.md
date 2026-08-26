@@ -194,3 +194,43 @@ it is worth stating in the panel.
   means the test suite never touches the network, and the model is a config value.
 
 **Evidence:** google-genai 2.20.0 installed and imports on Python 3.14.4.
+
+## D-016 — LLM provider: Groq + `openai/gpt-oss-120b`
+
+**Date:** 2026-08-26 · *supersedes D-015's Gemini choice*
+
+**Context:** the Gemini free key proved unusable — every current model 403
+"project denied access", every legacy model 404 "no longer available to new
+users" (F-004). Not worth diagnosing on a 10-day clock.
+
+**Chosen:** Groq, model `openai/gpt-oss-120b`.
+
+**Evidence — tested, not assumed:**
+- `GET /openai/v1/models` → 14 models available to this key
+- `moonshotai/kimi-k2-instruct-0905` (my first pick) → **404, no access**
+- Strict `json_schema` + `strict:true` verified working on three models:
+  `openai/gpt-oss-120b`, `qwen/qwen3.8-27b`, `openai/gpt-oss-20b`
+- A-7a: valid structured output, correctly converting 500 rupees → 50000 paise
+- A-7b: all five malformed outputs rejected by strict Pydantic
+
+**Why gpt-oss-120b:** largest available on this key, 131K context, and it handled
+the paise conversion without prompting tricks.
+
+**Free tier:** 30 RPM, no card. The intent compiler runs a handful of times per
+demo — far inside the limit.
+
+**Cost of the swap:** two lines in `.env`. D-015's provider-neutral config paid
+for itself twice in one day.
+
+**Standing rule from this:** never trust a model list as entitlement. Both Gemini
+and Groq advertised models the key could not call. Always probe with a real
+request before writing code against a model.
+
+## D-017 — HTTP client: `httpx` only
+
+**Date:** 2026-08-26
+**Context:** F-005. `urllib.request` received 403 from Groq where `curl` and
+`httpx` received 200 — a User-Agent block at the edge.
+**Decision:** all HTTP in this project uses `httpx`. No `urllib.request`.
+**Also:** when diagnosing an API, use raw `curl` before any SDK. F-004 showed the
+google-genai SDK hiding a clean 404 behind a 2-minute retry hang.
