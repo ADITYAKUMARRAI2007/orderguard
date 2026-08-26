@@ -154,3 +154,43 @@ API or through the browser. The shampoo ×20 catch works on both paths.
 for the shopping demo. The reliable payment route is still a normal Razorpay
 Checkout page completed manually. This only means that when MCP is available,
 the visual demo is genuinely available too.
+
+## D-015 — Free LLM provider: Gemini Flash, provider-neutral config
+
+**Date:** 2026-08-26 · *supersedes D-011's Anthropic assumption*
+
+**Context:** the project should not require a paid API key. It must be runnable
+by anyone cloning it, including a judge, at zero cost.
+
+**Alternatives considered (Aug 2026 free tiers, no credit card):**
+
+| Provider | Free limits | Structured output |
+|---|---|---|
+| **Gemini Flash** | ~10–15 RPM, ~1,500/day | ✅ **native `responseSchema`** |
+| Groq | 30 RPM, 1k–14.4k/day | partial — true structured outputs only on newer models; else `json_object` |
+| OpenRouter | 50 req/day | varies by model |
+| Cloudflare Workers AI | 10k Neurons/day | limited |
+
+**Chosen: Gemini Flash**, because native `responseSchema` maps directly onto the
+strict-Pydantic contract already frozen in `docs/API_CONTRACTS.md`. Constrained
+decoding means fewer validation rejections, which means fewer spurious
+clarification questions in the demo.
+
+**Config is provider-neutral:** `LLM_PROVIDER` / `LLM_API_KEY` / `LLM_MODEL`.
+Swapping to Groq is a config change plus one adapter, not a rewrite.
+
+**Why a weaker free model is SAFE here (not a compromise):**
+malformed output → schema rejection → clarification. Low confidence → escalation.
+**It can never produce a payment.** The worst case is a chattier agent that asks
+more questions, not a wrong purchase. This is a property of the gate design, and
+it is worth stating in the panel.
+
+**Caveats, stated openly:**
+- Free-tier Gemini inputs may be used to improve Google's products. Acceptable
+  here — all data is synthetic, no real customers, and emails are hashed before
+  reaching any prompt. Must appear in `LIMITATIONS.md`.
+- Free model catalogues change without notice; one provider silently deleted free
+  models in May 2026 and broke live code. Absorbed by design: `StubProvider`
+  means the test suite never touches the network, and the model is a config value.
+
+**Evidence:** google-genai 2.20.0 installed and imports on Python 3.14.4.

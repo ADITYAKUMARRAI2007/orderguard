@@ -16,6 +16,9 @@ claims cannot drift to fit them.
 - **All evaluation data is synthetic.** The injected failure frequencies are
   chosen by the generator and **do not represent production rates.**
 - Memory is tested on a small synthetic purchase history, not on real usage.
+- The LLM runs on a **free tier**. Free-tier Gemini inputs may be used to improve
+  Google's products. All data here is synthetic and emails are hashed before
+  reaching any prompt, but this is stated rather than hidden.
 - Nothing here has been reproduced against live production traffic.
 
 ## Payments
