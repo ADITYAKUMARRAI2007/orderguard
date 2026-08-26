@@ -113,3 +113,103 @@ a template.
 ### Remaining limitation
 If the Razorpay secret was pasted before the overwrite, it cannot be recovered —
 Razorpay displays the secret only once. A new test key must be generated.
+
+---
+
+## F-003 — Gemini rejects Pydantic's `exclusiveMinimum`
+
+**Date:** 2026-08-26 · **Checkpoint:** CP-0 · **Command:** A-7 probe
+
+### What I expected
+`Field(gt=0)` on a quantity to translate cleanly into Gemini's `responseSchema`.
+
+### What happened
+`ValidationError: properties.items.items.properties.quantity.exclusiveMinimum —
+Extra inputs are not permitted`. Gemini's `types.Schema` does not accept
+`exclusiveMinimum`.
+
+### How I proved it
+Probed three variants directly against `types.Schema.model_validate`:
+`gt=0` (→ `exclusiveMinimum`) **REJECTED**; `ge=1` (→ `minimum`) **ACCEPTED**;
+no constraint **ACCEPTED**.
+
+### Fix
+Use `ge=1` rather than `gt=0`. For integers these are semantically identical.
+
+### Design consequence — larger than the bug
+**The generation schema and the validation schema are not the same object.**
+Providers support different JSON Schema subsets. The architecture must be:
+
+    strict Pydantic model  =  validation contract (source of truth)
+              ↓ derive, stripping unsupported keywords
+    provider schema        =  generation hint only
+              ↓ model returns output
+    validate against the STRICT model, always
+
+A provider quirk must never be allowed to weaken the validation contract.
+A schema sanitiser is required at CP-1 or CP-3.
+
+### Regression test
+`tests/test_schema_compat.py` — assert the derived provider schema contains no
+keyword the provider rejects, and that the strict model still rejects
+`quantity=0` regardless.
+
+### Could this happen in production?
+Yes, and silently — a permissive generation schema plus weakened validation
+would let invalid quantities through.
+
+## F-004 — Gemini free key unusable; the model list lied
+
+**Date:** 2026-08-26 · **Checkpoint:** CP-0
+
+### What I expected
+`gemini-2.5-flash`, listed by `GET /v1beta/models`, to be callable.
+
+### What happened
+- `GET /v1beta/models` returned **HTTP 200** listing 37 models including
+  `gemini-2.5-flash`, `gemini-3.6-flash`, `gemini-3.7-flash`.
+- `POST .../gemini-2.5-flash:generateContent` → **404**:
+  *"no longer available to new users. Please update to models/gemini-3.6-flash."*
+- `POST .../gemini-3.6-flash:generateContent` → **403**:
+  *"Your project has been denied access."*
+- Same 403 on `gemini-3.7-flash`, `gemini-3.5-flash`, `gemini-3.1-flash-lite`,
+  `gemini-flash-latest`, `gemini-flash-lite-latest`, `gemini-3-flash-preview`.
+- Same 404 on `gemini-2.5-flash-lite`.
+
+Legacy models 404, current models 403. **No callable model exists for this key.**
+
+### Root cause
+Two separate problems compounding:
+1. The models-list endpoint advertises models the key cannot invoke.
+   **Listing is not entitlement.**
+2. The key's Google project is denied access to current models — an
+   account/project-level restriction, not a model-availability one.
+
+### How I proved it
+Direct REST calls, bypassing the SDK, with the minimal payload
+`{"contents":[{"parts":[{"text":"Say OK"}]}]}` — removing schema handling as a
+variable. Six models, two distinct error classes, zero successes.
+
+### Secondary symptom explained
+The google-genai SDK call hung for 2 minutes before timing out. That was the SDK
+retrying the 404 with backoff. **The SDK hid the real error behind a timeout;
+raw REST surfaced it in 0.67s.**
+
+### Fix
+Switch provider to Groq. `LLM_PROVIDER` / `LLM_API_KEY` / `LLM_MODEL` are already
+provider-neutral (D-015), so this is a config change, not a rewrite.
+
+### What I learned
+- **Never diagnose through an SDK when raw HTTP is available.** The SDK converted
+  a clear 404 into an opaque 2-minute hang.
+- **A model appearing in a list endpoint does not mean you can call it.**
+- D-015's provider-neutral config paid for itself within hours of being written.
+
+### Could this happen in production?
+Yes — this is precisely the "provider silently changes its free catalogue"
+scenario D-015 flagged. It happened the same day the decision was recorded.
+
+### Remaining limitation
+Why the project is denied access is unknown — possibly regional, account-age, or
+unaccepted terms. Not worth diagnosing on a 10-day clock when a working
+alternative takes 2 minutes.
