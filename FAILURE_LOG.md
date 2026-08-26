@@ -255,3 +255,54 @@ misleading status code.
 ### Remaining limitation
 Not investigated whether a custom UA on `urllib` would also work. Irrelevant —
 `httpx` is the standing choice.
+
+---
+
+## F-006 — Test account rejects international cards; UPI not enabled
+
+**Date:** 2026-08-26 · **Checkpoint:** CP-0 · **Command:** manual checkout (A-1B)
+
+### What I expected
+`4111 1111 1111 1111` — the most widely used test card — to complete a test payment.
+
+### What happened
+Razorpay Checkout returned: *"Payment could not be completed. International cards
+are not supported."* Separately, the payment-options list showed only Cards,
+Netbanking, Wallet and Pay Later — **no UPI**, so the documented
+`success@razorpay` UPI test handle was unusable too.
+
+### Root cause
+Two independent gaps in a fresh Indian test account:
+1. `4111...` is an international Visa test number. Domestic-only accounts reject it
+   regardless of test mode.
+2. UPI is not enabled by default; it requires activation in Payment Methods.
+
+### How I proved it
+The rejection message names the cause explicitly, and the options list was visible
+in the checkout UI.
+
+### Fix
+Use **Netbanking** for CP-0 verification — the test bank page is simulated, needs
+no instrument details, and always offers an explicit Success button.
+Domestic test cards (`5267 3181 8797 5449`, `4718 6091 0820 4366`) also work.
+
+### Regression test
+None — environmental, not code.
+
+### What I learned
+**"Test mode" does not mean "all instruments available."** A test account inherits
+the same instrument restrictions as a live one. Test credentials found in generic
+tutorials may not apply to a specific account's configuration.
+
+### Consequence for the build
+The demo merchant's checkout will offer **cards and netbanking, not UPI**, unless
+UPI is activated. The video script must not promise a UPI flow that does not exist.
+Recorded so the demo narration matches reality.
+
+### Could this happen in production?
+Yes — instrument availability varies by merchant configuration, and an integration
+assuming UPI is present would break for merchants without it.
+
+### Remaining limitation
+UPI can be enabled in Dashboard → Settings → Payment Methods, but may require
+account activation. Not pursued; netbanking is sufficient for verification.
