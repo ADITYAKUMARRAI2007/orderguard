@@ -10,3 +10,7 @@ test-offline:
 
 lint:
 	uv run python -c "import orderguard; print('imports ok')"
+
+# Run the demo shop.
+shop:
+	uv run uvicorn demo_store.app:app --reload --port 8002

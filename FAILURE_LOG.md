@@ -306,3 +306,66 @@ assuming UPI is present would break for merchants without it.
 ### Remaining limitation
 UPI can be enabled in Dashboard → Settings → Payment Methods, but may require
 account activation. Not pursued; netbanking is sufficient for verification.
+
+---
+
+## F-007 — I misunderstood what HTML escaping does
+
+**Date:** 2026-08-26 · **Checkpoint:** CP-2 · **Command:** `pytest tests/test_xss.py`
+
+### What I expected
+That escaping a hostile product title would remove the dangerous text, so
+`assert "onerror=alert(1)" not in html` would pass.
+
+### What happened
+The assertion failed. The text was still in the page.
+
+### Root cause
+**Escaping does not delete text. It neutralises markup.**
+`<img src=x onerror=alert(1)>` becomes `&lt;img src=x onerror=alert(1)&gt;`.
+The words `onerror=alert(1)` are still there as visible characters — but the
+`<` is now `&lt;`, so the browser renders them instead of obeying them.
+
+My test asserted the wrong property. The code was correct all along.
+
+### How I proved it
+Rendered the page with a deliberately hostile product and printed the result:
+
+    <h3>&lt;script&gt;window.__pwned=1&lt;/script&gt;</h3>
+
+No raw `<script>`; escaped form present. Working exactly as intended.
+
+### Fix
+Rewrote the assertions to check the *tag* is dead rather than the *words* gone:
+- `"<script>window.__pwned" not in html`  ← no runnable tag
+- `"&lt;script&gt;window.__pwned" in html` ← neutralised form present
+- count real `<script>` tags: exactly one, ours
+
+### Second, smaller bug in the same file
+A test scanned `shop.js` for the word `innerHTML` after stripping comments, but
+the stripper only removed comments at the *start* of a line. A trailing comment
+`// textContent, not innerHTML` slipped through and failed the test.
+
+Fixed by rewording the comment rather than loosening the regex. **A strict test
+that occasionally needs a comment reworded is better than a clever regex that
+might miss a real `innerHTML` call.**
+
+### Regression test
+`tests/test_xss.py` — 9 tests, including a real `<script>` and a real
+`<img onerror=>` injected through the catalog.
+
+### What I learned
+I wrote a test based on what I *assumed* the defence did, rather than checking
+what it actually did. The test failing was the system working correctly and
+telling me my mental model was wrong.
+
+Also: three of my four bugs today have been in *tests*, not in code. Tests
+deserve the same scepticism as the thing they test.
+
+### Could this happen in production?
+Yes, and dangerously — a developer who believes escaping "removes" bad text
+might strip escaping somewhere and assume the input was already clean.
+
+### Remaining limitation
+These tests cover titles and SKUs on the home page. Any new place that renders
+shop text needs its own test.
