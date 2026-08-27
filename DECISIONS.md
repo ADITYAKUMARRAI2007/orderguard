@@ -362,3 +362,40 @@ Mitigated by the FreshCart adapter and by never depending on it in tests.
 
 **Evidence:** `curl -X POST https://allbirds.com/api/mcp -d
 '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → 200 with the tool list.
+
+## D-021 — Indian commerce MCP: Shopify yes, Zomato/Swiggy no
+
+**Date:** 2026-08-27 · **All verified by direct test or first-party docs**
+
+| Platform | Official | Usable | Reason |
+|---|---|---|---|
+| **Shopify Storefront** | yes | **YES** | Public `/api/mcp`, no key, no approval |
+| Swiggy | yes | no | Invite-only whitelist, partner contract, **no sandbox** (F-009) |
+| Zomato | yes | **no** | Their own terms: *"third-party app development is explicitly prohibited due to security and legal considerations"* |
+| Blinkit / Zepto | no | no | Reverse-engineered, ToS-breaking, real orders |
+
+**Zomato detail:** `github.com/Zomato/mcp-server-manifest`. Five tools including
+`place_order` and `generate_payment_qr`. Requires OAuth with whitelisted redirect
+URIs and an access request form marked **"personal use only"**. Third-party apps
+are explicitly prohibited — which is precisely what OrderGuard would be.
+**We checked and chose not to.** That is worth stating in the README: it shows we
+read the terms rather than assuming.
+
+**Indian Shopify stores verified live (HTTP 200, `search_catalog` present):**
+`boat-lifestyle.com` · `mamaearth.in` · `sugarcosmetics.com` · `mcaffeine.com`
+· `plumgoodness.com` · `chumbak.com`
+
+Not on Shopify or blocked: bewakoof.com (301), thesouledstore.com (301),
+wowskinscience.com (404), nykaafashion.com (403).
+
+**Prices are integer minor units in INR** — boAt `118900 INR` (₹1,189),
+Mamaearth `85500 INR` (₹855), SUGAR `49900 INR` (₹499), Python type `int`.
+**Shopify made the same money decision as D-002.** Our `to_paise` handling
+applies to their data with no conversion and no float risk.
+
+**Decision:** ship `ShopifyMCPAdapter` with a configurable store, defaulting to an
+Indian brand so the demo is in rupees. FreshCart stays as the offline adapter so
+tests never touch the network.
+
+**Standing rule (restated):** never complete a checkout on a third-party store.
+Build the cart, read it back, verify, stop at the checkout URL.
