@@ -3,7 +3,8 @@
 Two implementations behind one interface:
 
 ``StubProvider``   fake, offline, always gives the same answer. Used by every test.
-``GroqProvider``   the real thing. Added at CP-3, not needed yet.
+``GeminiProvider`` and ``GroqProvider`` are real providers. Tests use an
+injected transport and never call either service.
 
 The rule this file exists to enforce: **the test suite must pass with no API key
 and no internet.** A test that needs the network is a test that fails when the
@@ -13,9 +14,16 @@ The other rule: if the model gives an answer we cannot use, that becomes a
 question for the user. It never becomes a payment.
 """
 
+import json
+import os
 from typing import Any, Protocol, runtime_checkable
 
-__all__ = ["LLMProvider", "StubProvider", "LLMUnavailable", "UnsupportedByStub"]
+import httpx
+
+__all__ = [
+    "LLMProvider", "StubProvider", "GeminiProvider", "GroqProvider", "provider_from_env",
+    "LLMUnavailable", "UnsupportedByStub",
+]
 
 
 class LLMUnavailable(RuntimeError):
@@ -113,3 +121,145 @@ def _deep_copy(value: Any) -> Any:
     if isinstance(value, list):
         return [_deep_copy(v) for v in value]
     return value
+
+
+class GeminiProvider:
+    """Small REST provider for Gemini structured output.
+
+    Validation still belongs to the intent compiler. This class guarantees only
+    that the provider response is JSON-shaped and converts transport/provider
+    failures into ``LLMUnavailable``.
+    """
+
+    name = "gemini"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        client: httpx.Client | None = None,
+    ) -> None:
+        if not api_key:
+            raise ValueError("Gemini API key is required")
+        if not model:
+            raise ValueError("Gemini model is required")
+        self._api_key = api_key
+        self._model = model
+        self._client = client or httpx.Client(timeout=httpx.Timeout(20.0, connect=8.0))
+        self._owned_client = client is None
+
+    def close(self) -> None:
+        if self._owned_client:
+            self._client.close()
+
+    def complete(self, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "responseJsonSchema": schema,
+                "temperature": 0,
+            },
+        }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self._model}:generateContent"
+        try:
+            response = self._client.post(
+                url,
+                headers={"x-goog-api-key": self._api_key},
+                json=payload,
+            )
+            response.raise_for_status()
+            body = response.json()
+            parts = body["candidates"][0]["content"]["parts"]
+            text = "".join(part.get("text", "") for part in parts)
+            result = json.loads(text)
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+            raise LLMUnavailable("Gemini returned no usable structured response") from exc
+        if not isinstance(result, dict):
+            raise LLMUnavailable("Gemini structured response was not an object")
+        return result
+
+
+class GroqProvider:
+    """OpenAI-compatible Groq chat-completions provider.
+
+    Groq is selected explicitly through ``LLM_PROVIDER=groq``. The model gets
+    a JSON object request, while the caller still performs the strict Pydantic
+    validation. The model can suggest fields; it cannot create a payment.
+    """
+
+    name = "groq"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        client: httpx.Client | None = None,
+    ) -> None:
+        if not api_key:
+            raise ValueError("Groq API key is required")
+        if not model:
+            raise ValueError("Groq model is required")
+        self._api_key = api_key
+        self._model = model
+        self._client = client or httpx.Client(timeout=httpx.Timeout(20.0, connect=8.0))
+        self._owned_client = client is None
+
+    def close(self) -> None:
+        if self._owned_client:
+            self._client.close()
+
+    def complete(self, system: str, user: str, schema: dict[str, Any]) -> dict[str, Any]:
+        schema_text = json.dumps(schema, separators=(",", ":"))
+        payload = {
+            "model": self._model,
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        f"{system} Return only valid JSON matching this schema: "
+                        f"{schema_text}"
+                    ),
+                },
+                {"role": "user", "content": user},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        try:
+            response = self._client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+            body = response.json()
+            text = body["choices"][0]["message"]["content"]
+            result = json.loads(text)
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
+            raise LLMUnavailable("Groq returned no usable structured response") from exc
+        if not isinstance(result, dict):
+            raise LLMUnavailable("Groq structured response was not an object")
+        return result
+
+
+def provider_from_env() -> LLMProvider:
+    """Select a provider explicitly; tests and offline runs use the stub."""
+    provider = os.getenv("LLM_PROVIDER", "stub").strip().lower()
+    if provider == "stub":
+        return StubProvider()
+    if provider == "gemini":
+        return GeminiProvider(
+            api_key=os.getenv("LLM_API_KEY", ""),
+            model=os.getenv("LLM_MODEL", ""),
+        )
+    if provider == "groq":
+        return GroqProvider(
+            api_key=os.getenv("LLM_API_KEY", ""),
+            model=os.getenv("LLM_MODEL", ""),
+        )
+    raise ValueError(f"unsupported LLM_PROVIDER: {provider!r}")

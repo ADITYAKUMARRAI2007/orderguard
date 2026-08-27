@@ -399,3 +399,47 @@ tests never touch the network.
 
 **Standing rule (restated):** never complete a checkout on a third-party store.
 Build the cart, read it back, verify, stop at the checkout URL.
+
+
+## D-022 — Shopify MCP returns money in two different shapes
+Date: 2026-08-27
+Context: the same endpoint, one call apart, returns
+  search_catalog -> {"amount": 26400,   "currency": "INR"}   integer, MINOR units
+  get_cart       -> {"amount": "528.0", "currency": "INR"}   string,  MAJOR units
+Passing either through a single parser produces a 100x error in one direction,
+and float("528.0") * 100 puts binary floating point into a payment path.
+Decision: two named parsers, minor_from_search and minor_from_cart, and no
+  general-purpose one. The type carries the unit. minor_from_cart accepts only a
+  string, so if Shopify ever switches the cart to integer minor units the code
+  fails loudly instead of silently reading Rs 264 as Rs 26,400.
+Evidence: probe/cart_shape.py against slurrpfarm.com, 27 Aug 2026.
+
+## D-023 — Merchant prose never reaches a model or a gate
+Date: 2026-08-27
+Context: update_cart and get_cart both return an `instructions` field of prose
+  addressed to the AI ("Ask if they have any discount codes..."). Shopify's copy
+  is benign. The point is the channel: a merchant-controlled string arriving on
+  the same wire as the cart totals, on every Shopify store.
+Decision: the field is dropped at the adapter boundary. Never parsed, stored, or
+  shown to a model. Only typed fields leave the adapter.
+Note: identifiers, quantities and prices are still merchant-supplied. They are
+  validated and compared deterministically; prose gets no authority at all.
+
+## D-024 — G_PRICES_MATCH added; the cap was never a price check
+Date: 2026-08-27
+Context: found while wiring the live Shopify adapter to the gates. The user is
+  shown a price when they choose an offer (Rs 94.05 each in the live run). That
+  number was then discarded: CartExpectation held only variant_id and quantity,
+  and the only money check was cart total <= cap.
+  So a merchant quoting Rs 12 during search and charging Rs 80 in the cart passes
+  every gate, provided six of them stay under a Rs 500 cap. Right shop, right
+  item, right count, wrong price, checkout allowed.
+Decision: ApprovedCartLine carries unit_price_paise, with NO default. The
+  observed unit price must equal the quoted one exactly. New pre-payment gate
+  G_PRICES_MATCH. Pre-payment set is now twelve, total twenty-one.
+Why no default: a default would let a caller silently omit the quoted price and
+  get an unchecked cart. Required means the mistake is a validation error.
+Downside: the frozen gate list changed after CP-0. Recorded rather than hidden;
+  the freeze exists to stop invented counts, not to preserve a known hole.
+Test: tests/test_cart_verifier.py::test_a_silent_price_rise_under_the_cap_is_blocked
+      tests/test_checkout_guard.py::test_a_price_rise_under_the_cap_blocks_checkout

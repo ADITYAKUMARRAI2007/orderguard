@@ -12,9 +12,13 @@ Five things must be true:
 import json
 import socket
 
+import httpx
 import pytest
 
-from orderguard.llm import LLMProvider, StubProvider, UnsupportedByStub
+from orderguard.llm import (
+    GeminiProvider, GroqProvider, LLMProvider, LLMUnavailable, StubProvider,
+    UnsupportedByStub,
+)
 from orderguard.models import PurchaseIntent
 
 
@@ -134,3 +138,54 @@ def test_stub_works_with_no_api_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     assert StubProvider().complete("s", "freshcart: add milk", SCHEMA)["merchant"] == "freshcart"
+
+
+def test_gemini_provider_uses_structured_output_request_without_a_live_call():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["key"] = request.headers["x-goog-api-key"]
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "candidates": [{"content": {"parts": [{"text": '{"merchant":"freshcart"}'}]}}]
+        })
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    provider = GeminiProvider("test-key", "gemini-test", client=client)
+    assert provider.complete("system", "user", {"type": "object"}) == {"merchant": "freshcart"}
+    assert seen["key"] == "test-key"
+    assert seen["body"]["generationConfig"]["responseMimeType"] == "application/json"
+    assert seen["body"]["generationConfig"]["responseJsonSchema"] == {"type": "object"}
+
+
+def test_gemini_provider_fails_safely_for_bad_json():
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "candidates": [{"content": {"parts": [{"text": "not-json"}]}}]
+        })
+
+    provider = GeminiProvider("test-key", "gemini-test", client=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(LLMUnavailable):
+        provider.complete("system", "user", {"type": "object"})
+
+
+def test_groq_provider_uses_openai_compatible_json_request_without_a_live_call():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers["authorization"]
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={
+            "choices": [{"message": {"content": '{"merchant":"freshcart"}'}}]
+        })
+
+    provider = GroqProvider(
+        "test-key", "openai/gpt-oss-120b",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert provider.complete("system", "user", {"type": "object"}) == {"merchant": "freshcart"}
+    assert seen["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert seen["auth"] == "Bearer test-key"
+    assert seen["body"]["response_format"] == {"type": "json_object"}

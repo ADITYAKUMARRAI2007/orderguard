@@ -95,19 +95,25 @@ class ClarificationReason(StrEnum):
 
 
 class GateName(StrEnum):
-    """The 20 safety checks. Frozen at CP-0 — see docs/GATES.md.
+    """The 21 safety checks. Frozen at CP-0 — see docs/GATES.md.
 
     All must pass before money moves. Every one is plain code over typed values,
     so no text and no AI answer can move them.
+
+    PRICES_MATCH was added after CP-0, when building the real Shopify adapter
+    showed the original eleven could not catch a merchant quoting one price and
+    charging another beneath the cap. Recorded as D-024. The list is frozen so
+    that a count is never invented, not so that a hole stays open.
     """
 
-    # --- before payment: the eleven mandate gates ---
+    # --- before payment: the twelve mandate gates ---
     MERCHANT_PERMITTED = "G_MERCHANT_PERMITTED"
     INTENT_VALID = "G_INTENT_VALID"
     FIELDS_COMPLETE = "G_FIELDS_COMPLETE"
     CART_UNIQUE = "G_CART_UNIQUE"
     ATTRIBUTES_MATCH = "G_ATTRIBUTES_MATCH"
     QUANTITIES_MATCH = "G_QUANTITIES_MATCH"      # bananas x60 fails here
+    PRICES_MATCH = "G_PRICES_MATCH"              # quoted ₹12, charged ₹80: fails here
     ITEMS_AVAILABLE = "G_ITEMS_AVAILABLE"
     CURRENCY_MATCH = "G_CURRENCY_MATCH"
     WITHIN_CAP = "G_WITHIN_CAP"                  # ₹640 under a ₹500 cap fails here
@@ -129,6 +135,7 @@ class GateName(StrEnum):
 PRE_PAYMENT_GATES: tuple[GateName, ...] = (
     GateName.MERCHANT_PERMITTED, GateName.INTENT_VALID, GateName.FIELDS_COMPLETE,
     GateName.CART_UNIQUE, GateName.ATTRIBUTES_MATCH, GateName.QUANTITIES_MATCH,
+    GateName.PRICES_MATCH,
     GateName.ITEMS_AVAILABLE, GateName.CURRENCY_MATCH, GateName.WITHIN_CAP,
     GateName.CONFIRMATION_MATCHES, GateName.IDEMPOTENCY_FREE,
 )

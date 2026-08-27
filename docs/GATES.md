@@ -2,13 +2,19 @@
 
 **Frozen 2026-08-26 at CP-0.** These names do not change without a `DECISIONS.md` entry.
 
+**Amended 2026-08-27 (D-024):** `G_PRICES_MATCH` added, taking the pre-payment set to
+twelve and the total to twenty-one. Building the live Shopify adapter showed the original
+eleven could not catch a merchant quoting one price during search and charging another in
+the cart, as long as the total stayed under the cap. A cap is a ceiling, not a price check.
+The list is frozen so a count is never invented after the fact — not so a hole stays open.
+
 Every gate is **deterministic code over typed values**. No gate reads free text.
 No model output can move one. **All must pass for money to move** — a single failure
 blocks the action and produces a human-readable reason.
 
 ---
 
-## Pre-payment: the eleven mandate gates
+## Pre-payment: the twelve mandate gates
 
 | # | `GateName` | Checks | Failure reason shown to the user |
 |---|---|---|---|
@@ -18,6 +24,7 @@ blocks the action and produces a human-readable reason.
 | 4 | `G_CART_UNIQUE` | exactly one cart identified for this intent | "*N* carts match this request — cannot choose safely" |
 | 5 | `G_ATTRIBUTES_MATCH` | every `required_attributes` entry satisfied | "Requested *A4, black*; cart has *A5, blue*" |
 | 6 | `G_QUANTITIES_MATCH` | observed qty == intent qty, **per line** | "Requested 6 bananas; cart contains 60" |
+| 6b | `G_PRICES_MATCH` | observed unit price == **the price quoted when the user chose** | "Quoted ₹12 each; the cart charges ₹80" |
 | 7 | `G_ITEMS_AVAILABLE` | every line in stock | "*Brown bread* is out of stock" |
 | 8 | `G_CURRENCY_MATCH` | cart currency == intent currency | "Cart is in USD; request was INR" |
 | 9 | `G_WITHIN_CAP` | `cart_total_paise <= maximum_total_paise` | "Cart is ₹640; your limit is ₹500" |

@@ -12,7 +12,7 @@ what the user asked for, and every later step compares reality against it.
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .enums import (
     Action, ClarificationReason, Classification, GateName,
@@ -94,13 +94,25 @@ class CartLine(BaseModel):
     model_config = STRICT
 
     sku: str = Field(min_length=1)
+    # External stores identify a purchasable variant separately from their
+    # product. FreshCart uses the SKU for both, so these remain optional.
+    line_id: str = ""
+    variant_id: str = ""
     title: str = ""
     quantity: int = Field(ge=1)
-    unit_price_paise: int = Field(ge=0)
+    # A platform may quote a line total without a safely divisible unit price
+    # (for example, a line-level discount on three units). Keep the exact line
+    # total authoritative rather than inventing a rounded per-unit price.
+    unit_price_paise: int | None = Field(default=None, ge=0)
+    line_total_paise: int | None = Field(default=None, ge=0)
 
-    @property
-    def line_total_paise(self) -> int:
-        return self.quantity * self.unit_price_paise
+    @model_validator(mode="after")
+    def has_an_exact_line_total(self) -> "CartLine":
+        if self.line_total_paise is None:
+            if self.unit_price_paise is None:
+                raise ValueError("a cart line needs a unit price or exact line total")
+            self.line_total_paise = self.quantity * self.unit_price_paise
+        return self
 
 
 class ObservedCart(BaseModel):
@@ -112,13 +124,22 @@ class ObservedCart(BaseModel):
     model_config = STRICT
 
     merchant: str = Field(min_length=1)
+    cart_id: str = ""
     lines: list[CartLine] = Field(default_factory=list)
     currency: str = Field(default="INR", min_length=3, max_length=3)
+    subtotal_paise: int | None = Field(default=None, ge=0)
     delivery_paise: int = Field(default=0, ge=0)
+    total_paise: int | None = Field(default=None, ge=0)
+    checkout_url: str = ""
 
-    @property
-    def total_paise(self) -> int:
-        return sum(line.line_total_paise for line in self.lines) + self.delivery_paise
+    @model_validator(mode="after")
+    def has_exact_totals(self) -> "ObservedCart":
+        line_total = sum(line.line_total_paise or 0 for line in self.lines)
+        if self.subtotal_paise is None:
+            self.subtotal_paise = line_total
+        if self.total_paise is None:
+            self.total_paise = self.subtotal_paise + self.delivery_paise
+        return self
 
 
 # --- what the payment world says --------------------------------------------

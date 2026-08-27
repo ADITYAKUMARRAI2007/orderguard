@@ -14,3 +14,8 @@ lint:
 # Run the demo shop.
 shop:
 	uv run uvicorn demo_store.app:app --reload --port 8002
+
+# Run the guarded-cart API. It can search live allowlisted stores only when a
+# user calls its search endpoint; tests never touch the network.
+app:
+	uv run uvicorn orderguard.app:app --reload --port 8000 --env-file .env

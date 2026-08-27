@@ -58,15 +58,14 @@ IntentItem:
 
 ```
 CommerceAdapter (protocol):
-    search_products(query, constraints) -> list[Product]
-    get_product(sku)                    -> Product
-    add_to_cart(sku, quantity)          -> None
-    read_cart()                         -> ObservedCart
-    prepare_checkout()                  -> CheckoutHandle
+    search(query, limit) -> list[Offer]
+    add_to_cart(variant_id, quantity, cart_id?) -> ObservedCart
+    read_cart(cart_id) -> ObservedCart
 ```
 
-Implemented by **`DemoStoreAdapter`** (HTTP API — reliable, used for tests)
-and optionally **`BrowserMCPAdapter`** (DOM — used for the visual demo).
+Implemented by the offline **FreshCart** API and `ShopifyMCPAdapter` for a
+small allowlist of independently probed stores. A Shopify cart is read back
+before it is trusted; OrderGuard stops before third-party checkout.
 
 **This protocol is why Browser MCP is optional rather than load-bearing (D-007).**
 Verified at CP-0: MCP can extract structured cart data
@@ -75,6 +74,15 @@ paths and `cart_verifier` behaves identically. See D-014.
 
 `ObservedCart` is what the store *actually contains* — never what the agent
 *believes* it contains. That distinction is the entire point of the verifier.
+
+### Cart expectation and comparison
+
+The language model never picks a cart line by title. Once the user selects an
+offer, the UI records `CartExpectation`: merchant, currency, maximum total and
+the exact `variant_id → quantity` list. `compare_cart()` independently compares
+that expectation with an `ObservedCart`. It rejects an unexpected variant,
+quantity change, merchant/currency mismatch, or a total over the cap. Its result
+is an input to the payment gate, never payment authorisation by itself.
 
 ---
 

@@ -3,6 +3,18 @@ name = "orderguard"
 version = "0.1.0"
 description = "A commerce agent that verifies what it bought, and proves the store recorded it exactly once."
 requires-python = ">=3.13"
+dependencies = [
+  "fastapi>=0.115",
+  "httpx>=0.28",
+  "pydantic>=2.10",
+  "uvicorn[standard]>=0.30",
+]
+
+[dependency-groups]
+dev = [
+  "hypothesis>=6.0",
+  "pytest>=8.0",
+]
 
 [build-system]
 requires = ["hatchling"]

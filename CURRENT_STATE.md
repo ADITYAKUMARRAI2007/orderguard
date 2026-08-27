@@ -1,6 +1,6 @@
 # Current State
 
-_Updated: 2026-08-26 · Checkpoint: **CP-0 COMPLETE** · Next: **CP-1**_
+_Updated: 2026-08-27 · Checkpoint: **guarded-cart backend complete** · Next: Razorpay ledger and payment verification_
 
 ## Workspace
 
@@ -27,6 +27,12 @@ _Updated: 2026-08-26 · Checkpoint: **CP-0 COMPLETE** · Next: **CP-1**_
 - **Browser MCP verified** (A-5): read, click, DOM mutation, structured extraction.
 - Settlements in test mode: HTTP 200, empty collections (A-3).
 - 20 gates frozen by name; 8 interfaces frozen.
+- **Real guarded-cart backend:** typed request compilation, selected-store
+  search, explicit user choice before a cart write, independent cart read-back,
+  cart-hash confirmation and all eleven pre-payment gates.
+- **Shopify adapter contract tested offline:** mixed money formats, multi-variant
+  results, malformed responses and currency disagreement all fail safely.
+- **113 tests pass** with no live merchant, payment or model call required.
 
 ## Assumption status — 11 of 11 closed
 
@@ -57,14 +63,15 @@ None.
 
 ## Exact next command
 
-    cd "$PWD" && pytest tests/test_money.py -v
+    cd "$PWD" && make app
 
-(CP-1 — money, enums, models, PurchaseIntent, LLM stub. Not yet written.)
+Then open `http://127.0.0.1:8000/docs` to exercise the guarded API locally.
 
 ## Track 01 status
 
-Payment path **proven**. Still needed: demo merchant, intent compiler,
-cart verification, mandate gates, confirmation, integrity core.
+Payment path **proven**. Intent compilation, cart verification, confirmation and
+pre-payment mandate gates are implemented. Still needed: persistent ledger,
+Razorpay payment action/verification wired into the app, audit chain and UI.
 
 ## Track 04 fallback status
 

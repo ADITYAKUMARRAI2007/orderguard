@@ -492,3 +492,58 @@ teams rebuild things that already ship.
 ### Remaining limitation
 Zomato's server is still unverified. Community write-ups describe one, but I have
 found no first-party documentation URL. Treat as unknown, not as absent.
+
+# F-010 — Twelve gates, and none of them checked the price
+ID: F-010
+Date: 2026-08-27
+Checkpoint: CP-4 review
+Command: pytest tests/test_cart_verifier.py -v
+Seed: n/a
+
+## Expected behaviour
+The pre-payment gates were described as catching a cart that does not match
+what the user approved. The user approves a product *at a price* — the number
+on screen when they pick an offer.
+
+## Actual behaviour
+The quoted price was thrown away. CartExpectation held variant_id and quantity
+only, and the sole money check was `cart_total <= maximum_total_paise`.
+A merchant quoting Rs 12 during search and charging Rs 80 in the cart passed
+all eleven gates, as long as six bananas stayed under a Rs 500 cap.
+
+## Root cause
+I read "within cap" as "the money is checked". It is not the same claim.
+A cap is a ceiling: it permits every price beneath it, including one the user
+was never shown. Identity checks (merchant, variant, quantity, currency) all
+pass, because nothing about the item's identity changed — only its price.
+
+## Proof
+tests/test_cart_verifier.py::test_a_silent_price_rise_under_the_cap_is_blocked
+Written first, and it passed against the old code, which is what proved the
+hole: the comparison reported `matches == True` on an overcharged cart.
+
+## Fix
+ApprovedCartLine.unit_price_paise, required with no default. Exact equality
+against the observed unit price. New gate G_PRICES_MATCH. See D-024.
+
+## Regression test
+Two: one at the comparison level, one at the gate level. They are separate on
+purpose — a comparison that notices a mismatch is not the same thing as a
+checkout that stops.
+
+## Lesson
+The gate list was frozen at CP-0 from reasoning, before any real merchant data
+existed. Freezing a contract early is right; treating it as complete is not.
+This hole only became visible when a real store quoted a real price into a real
+cart. Design review found nothing here. The integration did.
+
+## Production relevance
+High, and it is the exact shape of a real agentic-commerce attack. An agent that
+enforces only a spending cap can be walked up to that cap by any merchant it
+shops at. The cap is the user's maximum, not their agreement.
+
+## Remaining limitation
+Exact equality means a legitimate price change between search and cart also
+blocks. That is the correct default — it stops and asks — but it will produce
+false blocks on stores with frequent repricing, and we have not measured how
+often that happens.
