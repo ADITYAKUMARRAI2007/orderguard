@@ -310,3 +310,55 @@ dependencies · physical access.
 **Consequence:** `LIMITATIONS.md` and `SECURITY.md` must both carry the sentence
 *"this is not a security audit."* We demonstrate specific defences, not general
 safety.
+
+## D-020 — Shopify Storefront MCP is the real commerce integration
+
+**Date:** 2026-08-27 · **Verified by direct test, not by search**
+
+**Context:** the user asked for commerce MCP servers that are actually usable.
+Swiggy's is official but invite-only with no sandbox (F-009). Zomato's is
+unverified. Unofficial Blinkit/Zepto servers break ToS and place real orders.
+
+**Finding:** **every Shopify store exposes an official MCP server at
+`https://<store>/api/mcp`** — no API key, no approval, no app install.
+
+Verified live against `allbirds.com` and `gymshark.com`, both HTTP 200.
+
+**Tools (5):** `search_catalog` · `get_product_details` · `update_cart` ·
+`get_cart` · `search_shop_policies_and_faqs`
+
+**Full loop proven end to end against allbirds.com:**
+1. searched the real catalogue — 10 real products with real prices
+2. `update_cart` added quantity 2 to a **real cart**
+3. `get_cart` read it back independently — a real cart id and checkout URL
+4. compared intent (2) against observed (2) — MATCH
+
+That is the entire OrderGuard thesis, running against a production store.
+
+**Two incidental findings:**
+
+1. **Shopify returns money as integer minor units** — `{"amount": 7500,
+   "currency": "USD"}`. Same decision as our integer paise (D-002).
+
+2. **`update_cart` returns an `instructions` field containing natural-language
+   directions aimed at the AI** — *"Assist them in navigating to checkout by
+   providing a markdown link to the checkout URL."* **The merchant's server is
+   sending instructions to the agent, in production, on millions of stores.**
+   A hostile merchant could put anything there. This makes our injection threat
+   model concrete rather than hypothetical, and our gates are immune because
+   they compare numbers and ids, never text.
+
+**Decision:**
+- `ShopifyMCPAdapter` becomes a real `CommerceAdapter` implementation.
+- FreshCart stays as the offline/fallback adapter so tests never need the network.
+- **Hard rule: we never complete a checkout on a third-party store.** We build a
+  cart, read it back, verify, and stop at the checkout URL. Nothing ordered,
+  nothing paid.
+- Razorpay test mode remains the payment proof. This also avoids implying any
+  Swiggy/Shopify–Razorpay commercial relationship that does not exist.
+
+**Downside:** requires network, and a third-party store could change or rate-limit.
+Mitigated by the FreshCart adapter and by never depending on it in tests.
+
+**Evidence:** `curl -X POST https://allbirds.com/api/mcp -d
+'{"jsonrpc":"2.0","id":1,"method":"tools/list"}'` → 200 with the tool list.
