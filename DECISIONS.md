@@ -234,3 +234,79 @@ request before writing code against a model.
 **Decision:** all HTTP in this project uses `httpx`. No `urllib.request`.
 **Also:** when diagnosing an API, use raw `curl` before any SDK. F-004 showed the
 google-genai SDK hiding a clean 404 behind a 2-minute retry hang.
+
+## D-018 — Vulcan: position against it, never claim integration
+
+**Date:** 2026-08-26 · **Do at CP-8 (README), not before**
+
+**Context:** Razorpay launched **Vulcan** on 18 Aug 2026 — a payments foundation
+model covering routing, fraud, disputes and checkout personalisation.
+**Verified: there is no public Vulcan API.** No endpoint, no SDK, no docs. It is
+internal infrastructure. Code samples online showing `razorpay_vulcan_sdk` are
+explicitly labelled hypothetical by their authors.
+
+**Decision — two things, both cheap:**
+
+1. **README framing (~30 min):**
+   > *Vulcan predicts. OrderGuard verifies.*
+
+   Vulcan answers *"will this payment succeed? is this fraud? which route?"*
+   OrderGuard answers *"did the purchase reach the shop, exactly once?"*
+   **A prediction can be entirely correct and the order still be lost**, because
+   the loss happens *after* the prediction — in the gap between payment success
+   and the shop recording it. This is the layer beneath Vulcan, not a competitor
+   to it.
+
+2. **An interface seam (~1 hr, at CP-3):** the ambiguity-adjudication step accepts
+   an optional `external_risk_score`. Filled by our own simple scorer. Documented:
+   *"if Razorpay exposed a Vulcan score, it plugs in here — and note it still
+   cannot override a safety gate."*
+
+**Hard rules:**
+- **Never claim we integrated with Vulcan.** We cannot. A judge who built it spots
+  the lie instantly and everything else becomes suspect.
+- **Never repeat Vulcan's performance numbers as fact.** The 8–10% success-rate lift
+  and 5x fraud-detection figures are self-reported beta results with no published
+  methodology, baseline or sample period — journalists flagged this at launch.
+  Quote them as *Razorpay's claims*, never as findings.
+
+**Why it is worth doing:** knowing Vulcan exists is rare; knowing *what it does not
+cover* shows we read their architecture rather than their press release.
+
+**Why at CP-8 and not now:** designing around something we cannot test invites
+overclaiming. At CP-8 we describe what we actually built.
+
+## D-019 — Security: named attacks with tests, never "bulletproof"
+
+**Date:** 2026-08-26
+
+**Context:** the user asked for the system to be "full proof" against injection and
+cyber threats. **No system is.** Claiming it would break our own no-false-confidence
+rule, and a payments panel would treat the claim as naivety.
+
+**Decision:** replace the unprovable claim with a provable one — a **named list of
+attacks, each with a test**. "Here are 9 attacks and the tests that block them" is
+stronger in a panel than "it is secure."
+
+**In scope — attacks we test and block:**
+
+| # | Attack | Defence | Test |
+|---|---|---|---|
+| 1 | Prompt injection via product name/description | gates are code over typed values; no text reaches them | `test_prompt_injection.py` |
+| 2 | Forged payment success from the browser | server-side HMAC + independent fetch (D-012) | `test_payment_verification.py` |
+| 3 | Replay — same webhook fired repeatedly | DB UNIQUE idempotency key claimed before write | `test_idempotency.py` |
+| 4 | Cart tampered after user confirmation | `confirmed_cart_hash` frozen at confirmation (D-004) | `test_confirmation_gate.py` |
+| 5 | XSS via product title in the demo shop | escape on render; no `innerHTML` with untrusted text | `test_xss.py` |
+| 6 | SQL injection | SQLModel parameterised queries only; no string-built SQL | `test_sql_injection.py` |
+| 7 | Secret leakage into the repo | `.gitignore` first commit; pre-commit grep; history audit | manual, 5-part audit |
+| 8 | AI inventing fields or amounts | strict Pydantic `extra="forbid"`; schema has no amount field | `test_models.py` |
+| 9 | Over-cap spend via persuasion | `WITHIN_CAP` gate is arithmetic, unreachable by text | `test_mandate_cap.py` |
+
+**Explicitly out of scope — stated openly in LIMITATIONS.md:**
+a compromised developer machine · anyone holding the `.env` file · denial of
+service · Razorpay itself returning wrong data · supply-chain attacks on
+dependencies · physical access.
+
+**Consequence:** `LIMITATIONS.md` and `SECURITY.md` must both carry the sentence
+*"this is not a security audit."* We demonstrate specific defences, not general
+safety.
