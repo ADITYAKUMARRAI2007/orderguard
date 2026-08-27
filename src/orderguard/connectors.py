@@ -116,19 +116,22 @@ _GATED = (
         in_assistant_directory=True,
         evidence=(
             "POST https://mcp-server.zomato.com/mcp -> HTTP 401. Both OAuth "
-            "discovery documents return 200 and publish a registration "
-            "endpoint. Listed as a verified connector in Claude's directory. "
-            "Their README (github.com/Zomato/mcp-server-manifest) states they "
-            "are 'not allowing any third party apps to be built on top of "
-            "Zomato MCP', and whitelists OAuth redirect URIs for Claude, "
-            "ChatGPT, VS Code and Postman only."
+            "discovery documents return 200. Verified connector in Claude's "
+            "directory. Refusal is not inferred from the README alone — a "
+            "Zomato maintainer states it directly in their issue tracker: "
+            "'We are not allowing any third party apps currently' (issue #35, "
+            "Nov 2025) and 'We wont be allowing localhost currently due to "
+            "impending security issues' (issue #33). 19 access requests filed "
+            "between Oct 2025 and Jun 2026; 11 have no reply at all. 'Will "
+            "enable the third party apps soon' was Oct 2025 (issue #9)."
         ),
         checked_on=_CHECKED,
         can_order=False,
-        note="You can add this to Claude yourself today, and it will order food. "
-             "OrderGuard cannot: our redirect URI is not on their whitelist, and "
-             "they have said no to third-party apps. Excluded by their rules, "
-             "not by our capability.",
+        note="You can add this to Claude yourself today and it will order food. "
+             "OrderGuard cannot, for two independent reasons: localhost redirect "
+             "URIs are explicitly refused, and third-party apps are not being "
+             "registered. Ten months of an open queue says this is a policy, not "
+             "a backlog. Excluded by their rules, not by our capability.",
     ),
 )
 

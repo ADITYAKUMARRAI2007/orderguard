@@ -55,6 +55,9 @@ def test_zomato_is_excluded_by_their_rules_not_by_our_ability():
     assert zomato.endpoint == "https://mcp-server.zomato.com/mcp"
     assert "401" in zomato.evidence            # it answered; it exists
     assert "not allowing any third party apps" in zomato.evidence
+    # the refusal is quoted from a maintainer, not inferred from a README
+    assert "issue #35" in zomato.evidence
+    assert "localhost" in zomato.evidence      # the exact block on OrderGuard
     assert zomato.in_assistant_directory       # a person CAN use it in Claude
     assert not zomato.can_order                # OrderGuard cannot
 

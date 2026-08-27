@@ -525,3 +525,29 @@ Stated limitation, in the README not just here: this VERIFIES, it does not
 Also honest in the response body: not_checked_here lists duplicate payment,
   because OrderGuard is not in the payment path in this mode and must not imply
   a check it did not run.
+
+## D-028 — Zomato: the refusal is documented by Zomato, not inferred by us
+Date: 2026-08-28
+Context: the question kept coming back — if Claude can connect to Zomato, why
+  can't OrderGuard? Reading their issue tracker answers it far better than the
+  README did, and with evidence anyone can re-check.
+Evidence, github.com/Zomato/mcp-server-manifest, read 28 Aug 2026:
+  - issue #33, CLOSED, a Zomato maintainer:
+      "We wont be allowing localhost currently due to impending security issues"
+    OrderGuard runs on 127.0.0.1. This is the exact, explicit block.
+  - issue #35, CLOSED, same maintainer:
+      "We are not allowing any third party apps currently"
+  - issue #9, Oct 2025: "will enable the third party apps soon, please stay
+    tuned". Ten months later it is still not enabled.
+  - 19 whitelist/access requests filed Oct 2025 - Jun 2026. ELEVEN have no
+    reply from anyone at Zomato. The most recent (#70, NINGenie, Jun 2026) was
+    still unanswered two and a half months later.
+Conclusion: two independent blocks, either one sufficient. Localhost redirect
+  URIs are refused outright, and third-party registration is closed. A ten-month
+  queue is a policy, not a backlog. There is no route to this in eight days and
+  it would be dishonest to imply otherwise.
+Why this belongs in the pitch rather than only in the limitations: nineteen
+  teams tried to build agentic commerce on Zomato and could not get in. That is
+  demand with no supply, and it is the argument for a guard layer that does not
+  depend on any single merchant granting access — which is precisely what D-027
+  builds. OrderGuard checks carts, so it needs no merchant's permission.
