@@ -23,6 +23,7 @@ from .commerce.stores import ALL as ALL_STORES
 from .connectors import CONNECTORS, summary as connector_summary
 from .intent_compiler import CompilationResult, compile_intent
 from .llm import provider_from_env
+from .mcp_server import router as mcp_router
 from .memory import (
     apply_preferences_to_gaps,
     chat_history,
@@ -42,6 +43,10 @@ app = FastAPI(title="OrderGuard", version="0.1.0")
 # One database for chat, order history and preferences. Opened once; the module
 # owns it so no request handler can point memory somewhere else.
 MEMORY = memory_engine()
+
+# OrderGuard as an MCP server: any assistant can hand us a cart from any
+# connector it already has, and get back a verdict. See mcp_server.py.
+app.include_router(mcp_router)
 
 # A dependency-free browser client for the same API. Keeping the client small
 # makes the workflow easy to inspect while the product is being built.

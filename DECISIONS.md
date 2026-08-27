@@ -492,3 +492,36 @@ Refusal recorded in the data: unofficial reverse-engineered servers exist for
   merchant's rules has argued against itself.
 Test: no connector except Razorpay may claim can_order, and Razorpay only in
   test mode on our own merchant account.
+
+## D-027 — OrderGuard is also an MCP server, so it works with every connector
+Date: 2026-08-28
+Context: the goal was for OrderGuard to work with the connectors Claude already
+  offers — Zomato and the rest. I had been answering a narrower question, "can
+  OrderGuard log into Zomato?", whose answer is no (F-012: redirect whitelist,
+  plus their no-third-party-apps rule).
+  That was the wrong question. The right one is who is ALLOWED to call Zomato:
+  the user is, through their own Claude, for personal use. Exactly what Zomato
+  permits.
+Decision: expose OrderGuard itself as an MCP server at POST /mcp with two tools.
+    record_intent  what the user asked for, in their words, BEFORE shopping
+    check_cart     the cart the assistant built, checked against that intent
+  The assistant shops with whatever connector it already has. It hands us the
+  cart. We never call the merchant, so there is no OAuth to obtain and no
+  redirect URI to be whitelisted.
+Consequence, and the reason this is better than the direct integration: it
+  checks CARTS, NOT STORES. Zomato, Shopify and a merchant nobody has heard of
+  run through identical code, so a new connector is supported the day it exists.
+  Test: test_the_same_code_checks_any_merchant.
+Two refusals kept deliberately strict:
+  - record_intent will not invent a spending limit. No default, no inference
+    from prices found. An agent that picks its own cap has granted itself
+    permission the user never gave.
+  - a blocked cart returns isError=false. A refusal is a successful check, not
+    a failed call; isError would invite a client to retry it.
+Stated limitation, in the README not just here: this VERIFIES, it does not
+  ENFORCE. An assistant can decline to call us and nothing here can stop it.
+  Enforcement has to sit where the money moves — the payment layer — which is
+  the argument for why this belongs in a payments company.
+Also honest in the response body: not_checked_here lists duplicate payment,
+  because OrderGuard is not in the payment path in this mode and must not imply
+  a check it did not run.
