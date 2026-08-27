@@ -122,3 +122,51 @@ def test_a_silent_price_rise_under_the_cap_is_blocked():
     assert result.matches_quantities  # six bananas, exactly as asked
     assert not result.matches_prices  # and yet
     assert not result.matches
+
+
+def test_price_check_works_on_a_line_with_no_unit_price():
+    """Real Shopify carts quote a line total and no per-unit price.
+
+    An earlier version of the price check compared ``unit_price_paise``, which
+    is optional and was ``None`` on every live cart line. The comparison then
+    failed against ``[None]`` and blocked a perfectly good cart — a false block
+    on the happy path, which is how a safety check gets switched off.
+
+    The check is on line totals, which the model guarantees are populated.
+    """
+    quoted = _expected(
+        lines=[ApprovedCartLine(variant_id="v1", quantity=2, unit_price_paise=9405)]
+    )
+    live_shape = _cart(
+        lines=[CartLine(sku="v1", variant_id="v1", quantity=2, line_total_paise=18810)],
+        total_paise=18810,
+    )
+
+    result = compare_cart(quoted, live_shape)
+
+    assert live_shape.lines[0].unit_price_paise is None   # exactly as Shopify sends it
+    assert result.matches_prices
+    assert result.matches
+
+
+def test_an_indivisible_line_total_is_still_checked_exactly():
+    """A discount across three units gives a total that does not divide evenly.
+
+    100 paise over 3 units is 33.33 each. Dividing to get a unit price would
+    invent a number and then compare against the invention. Multiplying the
+    approved price up instead keeps the arithmetic exact.
+    """
+    quoted = _expected(
+        lines=[ApprovedCartLine(variant_id="v1", quantity=3, unit_price_paise=100)]
+    )
+    discounted = _cart(
+        lines=[CartLine(sku="v1", variant_id="v1", quantity=3, line_total_paise=299)],
+        total_paise=299,
+    )
+
+    result = compare_cart(quoted, discounted)
+
+    # 299 != 300. It is one paise in the shopper's favour and it still stops,
+    # because the cart no longer matches what they approved. Stopping to ask is
+    # the correct behaviour for a payment system; see D-024's stated limitation.
+    assert not result.matches_prices

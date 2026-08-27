@@ -82,7 +82,17 @@ async function startRequest(text) {
       addMessage(session.clarifications.join(" ") || "Could you tell me a little more?");
       return;
     }
-    addMessage(`I understood this as ${session.intent.items.map((i) => `${i.quantity} × ${i.requested_product}`).join(", ")} from ${session.intent.merchant}. I’ll now check what is actually available.`);
+    // The store is normally empty here: the user did not name one, and finding
+    // it is the point. Only mention a shop when they actually asked for one.
+    const items = session.intent.items
+      .map((i) => `${i.quantity} × ${i.requested_product}`)
+      .join(", ");
+    const shop = session.intent.merchant ? ` from ${session.intent.merchant}` : "";
+    const cap = `₹${(session.intent.maximum_total_paise / 100).toFixed(2)}`;
+    addMessage(
+      `I understood this as ${items}${shop}, up to ${cap}. ` +
+        `I’ll check the stores now and show you what each one charges.`
+    );
     await searchNextItem();
   } catch (error) { activity(error.message, "Stopped safely"); addMessage(`I stopped before changing anything: ${error.message}`); }
 }

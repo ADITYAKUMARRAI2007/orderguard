@@ -547,3 +547,62 @@ Exact equality means a legitimate price change between search and cart also
 blocks. That is the correct default — it stops and asks — but it will produce
 false blocks on stores with frequent repricing, and we have not measured how
 often that happens.
+
+# F-011 — The new price gate blocked the happy path on its first live run
+ID: F-011
+Date: 2026-08-28
+Checkpoint: CP-4
+Command: full guarded flow against slurrpfarm.com
+Seed: n/a
+
+## Expected behaviour
+G_PRICES_MATCH (F-010's fix) should pass on a correct cart: quoted Rs 94.05,
+charged Rs 94.05.
+
+## Actual behaviour
+  G_PRICES_MATCH FAILED - "was quoted at 9405 paise each but the cart
+  charges [None]"
+9 of 12 gates passed on a cart that was entirely correct.
+
+## Root cause
+I wrote the check against CartLine.unit_price_paise. That field is optional and
+documented as optional for a good reason: a store may quote a line total that
+does not divide evenly by the quantity, such as a discount spread over three
+units, so the model keeps the line total authoritative rather than inventing a
+rounded per-unit price. Every real Shopify cart line therefore has
+unit_price_paise = None.
+
+I added the check without reading the field's own comment explaining why it
+could not be relied on.
+
+## Proof
+tests/test_cart_verifier.py::test_price_check_works_on_a_line_with_no_unit_price
+
+## Fix
+Compare LINE TOTALS. Approved unit price x approved quantity, against the
+observed line total. Exact integer arithmetic, no division, and it uses the
+field the model guarantees is populated.
+
+## Regression test
+Two: the live cart shape with no unit price, and a line total that does not
+divide evenly (299 paise over 3 units).
+
+## Lesson
+A false block is not a safe failure. It looks like caution, but a gate that
+fires on correct carts is a gate someone will switch off, and then it is not
+protecting anything. The unsafe direction is not the only direction that
+matters.
+
+Second lesson: F-010 and F-011 are the same mistake one level apart. In F-010 I
+assumed the cap checked the price. In F-011 I assumed a field held a value. Both
+were assumptions about data I had already seen and had not re-read.
+
+## Production relevance
+High. The whole class of "safety checks that get disabled because they cry wolf"
+starts exactly here.
+
+## Remaining limitation
+Exact equality still blocks a legitimate discount applied after selection. That
+is deliberate — the cart no longer matches what was approved, so it stops and
+asks — but it is a real usability cost on stores that reprice or apply
+automatic offers, and we have not measured how often that happens.

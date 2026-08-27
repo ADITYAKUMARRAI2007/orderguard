@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "orderguard",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["run", "uvicorn", "orderguard.app:app", "--port", "8000", "--env-file", ".env"],
+      "port": 8000
+    }
+  ]
+}

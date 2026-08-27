@@ -136,20 +136,33 @@ def compare_cart(expected: CartExpectation, observed: ObservedCart) -> CartCompa
     # merchant quotes ₹12 during the search and charges ₹80 in the cart, six
     # bananas still cost less than a ₹500 cap and every identity check above
     # still passes. Only comparing against the quoted price catches that.
-    expected_prices = {line.variant_id: line.unit_price_paise for line in expected.lines}
-    observed_prices: dict[str, set[int]] = {}
+    #
+    # The comparison is on LINE TOTALS, not unit prices. A store may quote a
+    # line total that does not divide evenly by the quantity — a discount
+    # applied across three units, say — so ``CartLine`` keeps the line total
+    # authoritative and leaves the per-unit price optional. Dividing it back out
+    # would invent a rounded number and then compare against the invention.
+    # Multiplying the approved unit price up is exact integer arithmetic.
+    expected_totals = {
+        line.variant_id: line.unit_price_paise * line.quantity
+        for line in expected.lines
+    }
+    observed_totals: dict[str, int] = {}
     for line in observed.lines:
-        observed_prices.setdefault(_line_id(line), set()).add(line.unit_price_paise)
+        identifier = _line_id(line)
+        observed_totals[identifier] = (
+            observed_totals.get(identifier, 0) + (line.line_total_paise or 0)
+        )
 
     price_failures = []
-    for variant_id, approved_price in expected_prices.items():
-        seen = observed_prices.get(variant_id)
-        if seen is None:
+    for variant_id, approved_total in expected_totals.items():
+        charged = observed_totals.get(variant_id)
+        if charged is None:
             continue                     # absence is already a quantity failure
-        if seen != {approved_price}:
+        if charged != approved_total:
             price_failures.append(
-                f"{variant_id} was quoted at {approved_price} paise each "
-                f"but the cart charges {sorted(seen)}"
+                f"{variant_id} was quoted at {approved_total} paise "
+                f"but the cart charges {charged}"
             )
 
     matches_prices = not price_failures
