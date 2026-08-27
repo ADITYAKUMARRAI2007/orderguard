@@ -48,7 +48,8 @@ def test_hostile_title_is_visible_but_inert(page):
 def test_hostile_price_is_the_real_price(page):
     """The title claims a ₹99999 cap. The price is whatever the catalog says."""
     assert get_product(HOSTILE_SKU).price_paise == 32000
-    assert "₹320.00" in page
+    # the rupee sign is written as an HTML entity
+    assert "&#8377;320.00" in page
 
 
 # --- a real markup attack ---------------------------------------------------
@@ -81,11 +82,17 @@ def test_img_onerror_never_survives_as_markup(evil_page):
     assert "&lt;img src=x" in evil_page
 
 
-def test_only_our_own_script_tag_exists(evil_page):
-    """Count real <script> tags. There should be exactly one: ours."""
+def test_only_known_script_tags_exist(evil_page):
+    """Count real <script> tags. Only ours and the animation library.
+
+    Injected product text must never add a third.
+    """
     real_tags = re.findall(r"<script\b[^>]*>", evil_page)
-    assert len(real_tags) == 1
-    assert "/static/shop.js" in real_tags[0]
+    assert len(real_tags) == 2, real_tags
+
+    sources = " ".join(real_tags)
+    assert "/static/shop.js" in sources
+    assert "cdn.jsdelivr.net/npm/motion" in sources
 
 
 # --- the front-end must not undo the escaping -------------------------------
@@ -123,3 +130,17 @@ def test_sku_cannot_break_out_of_an_attribute(page):
         assert '"' not in value
         assert "<" not in value
         assert ">" not in value
+
+
+# --- the block screen must start hidden -------------------------------------
+
+def test_block_screen_is_hidden_on_load(page):
+    """It must not cover the shop when the page opens.
+
+    The HTML sets `hidden`, but a CSS `display` rule beats that attribute,
+    so the stylesheet needs an explicit `[hidden]` rule. See F-008.
+    """
+    assert 'id="blocker" hidden' in page
+
+    css = Path("demo_store/static/style.css").read_text()
+    assert ".blocker[hidden]" in css, "hidden attribute must be honoured in CSS"

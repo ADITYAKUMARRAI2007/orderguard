@@ -135,3 +135,40 @@ def test_hostile_product_can_still_be_bought_normally(client):
     ).json()
     assert cart["lines"][0]["unit_price_paise"] == 32000
     assert cart["subtotal_paise"] == 32000      # not ₹99999, not free
+
+
+# --- guard against fields landing in the wrong slot -------------------------
+
+def test_every_product_field_has_the_right_type():
+    """Positional arguments in a dataclass are a footgun.
+
+    Adding a field in the middle silently shifts every later argument.
+    That happened once: an attributes dict landed in the `image` field
+    because one product was written across multiple lines. See F-008.
+    """
+    from demo_store.catalog import all_products
+
+    for p in all_products():
+        assert isinstance(p.sku, str), p
+        assert isinstance(p.title, str), p
+        assert isinstance(p.price_paise, int), p
+        assert isinstance(p.in_stock, int), p
+        assert isinstance(p.category, str), p
+        assert isinstance(p.unit, str), p
+        assert isinstance(p.emoji, str), p
+        assert isinstance(p.image, str), f"{p.sku}: image must be a str, got {type(p.image)}"
+        assert isinstance(p.attributes, dict), f"{p.sku}: attributes must be a dict"
+
+
+def test_every_product_has_an_image():
+    from demo_store.catalog import all_products
+
+    for p in all_products():
+        assert p.image.startswith("https://"), f"{p.sku} has no image url"
+
+
+def test_no_price_is_a_float():
+    from demo_store.catalog import all_products
+
+    for p in all_products():
+        assert not isinstance(p.price_paise, float), f"{p.sku} price is a float"

@@ -154,22 +154,31 @@ def api_health() -> dict:
 @app.get("/", response_class=HTMLResponse)
 def page_home() -> str:
     cards = []
-    for p in all_products():
+    for i, p in enumerate(all_products()):
         # escape() is what stops a hostile product name becoming HTML.
+        # Every value below comes from the catalog, so every one is escaped.
         title = escape(p.title)
         sku = escape(p.sku)
+        img = escape(p.image)
+        brand = escape(p.attributes.get("brand") or p.category.title())
+        emoji = escape(p.emoji)
         rupees = f"{p.price_paise / 100:.2f}"
-        stock_cls = "out" if p.in_stock == 0 else "in"
-        stock_txt = "Out of stock" if p.in_stock == 0 else f"{p.in_stock} left"
+        out = p.in_stock == 0
+        stock_txt = "Out of stock" if out else f"{p.in_stock} in stock"
+        sold_out = '<span class="soldout">Sold out</span>' if out else ""
         cards.append(f"""
-        <article class="card" data-sku="{sku}">
-          <div class="emoji">{p.emoji}</div>
-          <h3>{title}</h3>
-          <div class="meta"><span class="cat">{escape(p.category)}</span>
-            <span class="stock {stock_cls}">{stock_txt}</span></div>
-          <div class="row">
-            <span class="price">₹{rupees}</span>
-            <button class="add" data-sku="{sku}" {"disabled" if p.in_stock == 0 else ""}>Add</button>
+        <article class="card{' is-out' if out else ''}" data-sku="{sku}" style="--i:{i}">
+          <div class="thumb">
+            <img src="{img}" alt="{title}" loading="lazy" data-emoji="{emoji}">
+            <span class="chip">{brand}</span>{sold_out}
+          </div>
+          <div class="body">
+            <h3>{title}</h3>
+            <div class="stock{' out' if out else ''}">{stock_txt}</div>
+            <div class="row">
+              <span class="price">&#8377;{rupees}</span>
+              <button class="add" data-sku="{sku}" {"disabled" if out else ""}>Add</button>
+            </div>
           </div>
         </article>""")
 
@@ -179,22 +188,33 @@ def page_home() -> str:
 _PAGE = """<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FreshCart</title><link rel="stylesheet" href="/static/style.css">
+<title>FreshCart</title>
+<link rel="preconnect" href="https://images.unsplash.com">
+<link rel="stylesheet" href="/static/style.css?v=3">
 </head><body>
 
+<div class="glow"></div>
+
 <header class="topbar">
-  <div class="brand"><span class="logo">🛒</span> FreshCart <span class="tag">demo store</span></div>
-  <div class="cart-pill" id="cartPill">Cart · <span id="cartCount">0</span> · <span id="cartTotal">₹0.00</span></div>
+  <div class="brand"><span class="logo">&#9673;</span> FreshCart <span class="tag">demo store</span></div>
+  <div class="cart-pill" id="cartPill">
+    <span id="cartCount">0</span> items
+    <span class="dot">&#183;</span>
+    <span id="cartTotal">&#8377;0.00</span>
+  </div>
 </header>
 
 <main>
+  <div class="hero">
+    <h1>Everyday groceries</h1>
+    <p>A demo storefront. Real prices, real stock, no real money.</p>
+  </div>
   <section class="grid">__CARDS__</section>
 </main>
 
-<!-- The moment that matters in the video. Hidden until a check fails. -->
 <div class="blocker" id="blocker" hidden>
   <div class="blockcard">
-    <div class="blockicon">⛔</div>
+    <div class="blockicon">&#9940;</div>
     <h1>PURCHASE BLOCKED</h1>
     <p class="sub">The cart does not match what was requested.</p>
     <ul id="blockReasons"></ul>
@@ -203,5 +223,6 @@ _PAGE = """<!doctype html>
   </div>
 </div>
 
-<script src="/static/shop.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/motion@11/dist/motion.min.js"></script>
+<script src="/static/shop.js?v=3"></script>
 </body></html>"""

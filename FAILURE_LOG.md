@@ -369,3 +369,62 @@ might strip escaping somewhere and assume the input was already clean.
 ### Remaining limitation
 These tests cover titles and SKUs on the home page. Any new place that renders
 shop text needs its own test.
+
+---
+
+## F-008 — Three UI bugs that no test would have caught
+
+**Date:** 2026-08-26 · **Checkpoint:** CP-2
+
+All three were found by *looking at the page*, not by running tests. Worth
+recording together, because they share a cause.
+
+### 8a. The block screen covered the shop on load
+
+**Expected:** `<div class="blocker" hidden>` to be invisible.
+**Happened:** a full-screen red PURCHASE BLOCKED panel on every page load.
+**Root cause:** the HTML `hidden` attribute sets `display:none`, but my CSS rule
+`.blocker{display:flex}` has higher specificity and overrides it.
+**Fix:** `.blocker[hidden]{display:none !important}`.
+**Regression test:** `test_block_screen_is_hidden_on_load` asserts the CSS rule exists.
+
+### 8b. Every product card was invisible
+
+**Expected:** cards to fade and slide in.
+**Happened:** header and hero rendered; the entire product grid was blank.
+**How I found it:** ran `getComputedStyle` on a card in the browser —
+`opacity: 1` but `transform: matrix(0, 0, 0, 0, 0, 0)`. A zero-scale matrix.
+**Root cause:** I animated the `transform` *shorthand* with `"none"` as the end
+value. Motion cannot interpolate that and produced a degenerate matrix.
+**Fix:** animate individual properties (`y`, `scale`, `x`) instead of a
+`transform` string. This is the documented way and avoids string parsing.
+**Also added a safety net:** 1.2s after load, anything still at opacity 0 or a
+zero matrix is forced visible. **Animation is decoration; content must never
+stay hidden because decoration failed.**
+
+### 8c. The block screen threw when opened
+
+**Expected:** `easing: spring({stiffness, damping})` to work.
+**Happened:** `TypeError: Cannot read properties of undefined (reading '0')`.
+**Root cause:** `motion@11` is the merged Motion/Framer Motion library. Springs
+are now **options** (`{type:"spring", stiffness, damping}`), not easing
+generators. The old Motion One `easing: spring()` form throws.
+**Fix:** switched both spring animations to the option form.
+
+### What I learned
+
+**Tests verify logic; only looking verifies appearance.** All 76 tests passed
+while the shop was showing a red error panel over an invisible product grid.
+
+Two of the three came from **library API assumptions** — the same pattern as
+F-004 (SDK hid a 404) and F-005 (urllib 403 vs curl 200). I keep assuming an
+API's shape instead of checking it. The fix each time was the same: inspect the
+actual runtime value.
+
+### Could this happen in production?
+Yes. A CSS specificity bug or a library version change can hide an entire page
+while every test still passes.
+
+### Remaining limitation
+Visual checks are manual. There is no screenshot-diffing test, and adding one is
+not worth the remaining time.
