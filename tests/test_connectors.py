@@ -43,9 +43,39 @@ def test_swiggy_is_recorded_as_real_but_out_of_reach():
 
 
 def test_zomato_is_excluded_by_their_rules_not_by_our_ability():
+    """Real, live, reachable from Claude — and still not ours to use.
+
+    An earlier version of this entry claimed no public endpoint existed. That
+    was wrong (F-012): the endpoint is documented and answers 401. The right
+    conclusion for the wrong reason is still a defect, because the reason is
+    what the next reader acts on.
+    """
     zomato = by_id("zomato")
     assert zomato.status is Status.RESTRICTED
-    assert "prohibited" in zomato.evidence.lower()
+    assert zomato.endpoint == "https://mcp-server.zomato.com/mcp"
+    assert "401" in zomato.evidence            # it answered; it exists
+    assert "not allowing any third party apps" in zomato.evidence
+    assert zomato.in_assistant_directory       # a person CAN use it in Claude
+    assert not zomato.can_order                # OrderGuard cannot
+
+
+def test_reachable_in_claude_is_not_the_same_as_usable_by_us():
+    """Two different questions. Collapsing them produced a wrong entry once.
+
+    A connector a person can add to Claude is not automatically one our own
+    application may connect to: Zomato whitelists redirect URIs, and ours is
+    not among them.
+    """
+    for connector in CONNECTORS:
+        if connector.in_assistant_directory:
+            assert not connector.can_order, connector.id
+
+
+def test_every_gated_connector_names_its_endpoint():
+    """If we say a thing exists, we say where, so it can be re-checked."""
+    for connector in CONNECTORS:
+        if connector.status in (Status.NEEDS_ACCESS, Status.RESTRICTED):
+            assert connector.endpoint.startswith("https://"), connector.id
 
 
 def test_unavailable_platforms_say_why_we_refuse_the_unofficial_route():

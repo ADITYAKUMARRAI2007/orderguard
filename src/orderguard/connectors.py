@@ -51,6 +51,12 @@ class Connector(NamedTuple):
     checked_on: str
     can_order: bool           # would OrderGuard place an order through it today
     note: str = ""
+    endpoint: str = ""
+    # Available to a person inside Claude, ChatGPT or VS Code today, even where
+    # OrderGuard itself cannot connect. The two are genuinely different
+    # questions and collapsing them into one produced a wrong entry once
+    # already — see FAILURE_LOG F-012.
+    in_assistant_directory: bool = False
 
 
 _CHECKED = "2026-08-28"
@@ -87,6 +93,7 @@ _GATED = (
         kind="food",
         status=Status.NEEDS_ACCESS,
         protocol="Swiggy MCP (Food, Instamart, Dineout)",
+        endpoint="https://mcp.swiggy.com",
         evidence=(
             "POST https://mcp.swiggy.com returned HTTP 401. The server is real "
             "and live; it requires credentials we do not have. Access is via "
@@ -104,17 +111,24 @@ _GATED = (
         label="Zomato",
         kind="food",
         status=Status.RESTRICTED,
-        protocol="Zomato MCP",
+        protocol="Zomato MCP (OAuth 2.0, PKCE)",
+        endpoint="https://mcp-server.zomato.com/mcp",
+        in_assistant_directory=True,
         evidence=(
-            "No public endpoint resolved at mcp.zomato.com. A manifest exists at "
-            "github.com/Zomato/mcp-server-manifest, and its terms state that "
-            "third-party app development is explicitly prohibited; access is "
-            "described as personal use only."
+            "POST https://mcp-server.zomato.com/mcp -> HTTP 401. Both OAuth "
+            "discovery documents return 200 and publish a registration "
+            "endpoint. Listed as a verified connector in Claude's directory. "
+            "Their README (github.com/Zomato/mcp-server-manifest) states they "
+            "are 'not allowing any third party apps to be built on top of "
+            "Zomato MCP', and whitelists OAuth redirect URIs for Claude, "
+            "ChatGPT, VS Code and Postman only."
         ),
         checked_on=_CHECKED,
         can_order=False,
-        note="Excluded by their rules, not by our capability. We are not going "
-             "to build against a platform that has said not to.",
+        note="You can add this to Claude yourself today, and it will order food. "
+             "OrderGuard cannot: our redirect URI is not on their whitelist, and "
+             "they have said no to third-party apps. Excluded by their rules, "
+             "not by our capability.",
     ),
 )
 

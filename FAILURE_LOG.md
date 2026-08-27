@@ -606,3 +606,75 @@ Exact equality still blocks a legitimate discount applied after selection. That
 is deliberate — the cart no longer matches what was approved, so it stops and
 asks — but it is a real usability cost on stores that reprice or apply
 automatic offers, and we have not measured how often that happens.
+
+# F-012 — Right conclusion, wrong evidence, on the third repeat of the same mistake
+ID: F-012
+Date: 2026-08-28
+Checkpoint: CP-8 (connectors)
+Command: curl -X POST https://mcp.zomato.com
+Seed: n/a
+
+## Expected behaviour
+The connector directory should record what is true about Zomato, with evidence
+another person can re-run.
+
+## Actual behaviour
+I wrote: "No public endpoint resolved at mcp.zomato.com."
+The user showed me a screenshot of Zomato as a VERIFIED connector in Claude's
+own directory, with an Add button.
+
+The real endpoint is https://mcp-server.zomato.com/mcp. It answers 401, it
+publishes both OAuth discovery documents, and Zomato documents it in their own
+README with install instructions for Claude, VS Code and Postman.
+
+## Root cause
+I guessed a hostname (mcp.zomato.com), got no answer, and wrote the failed guess
+down as a finding. A hostname I invented not resolving is evidence about my
+guess, not about Zomato.
+
+Two contributing errors:
+  - I ran an MCP registry search that returned zero results and read that as
+    "nothing exists". That tool does not index the Claude connector directory.
+    Same shape as F-004: an empty result treated as an answer.
+  - I never checked the manifest repo I had already cited. The install URL was
+    in its README the whole time.
+
+## Proof
+    POST https://mcp-server.zomato.com/mcp                   -> 401
+    GET  /.well-known/oauth-authorization-server             -> 200
+    GET  /.well-known/oauth-protected-resource               -> 200
+    gh api repos/Zomato/mcp-server-manifest/contents/README.md
+
+## Fix
+Zomato entry rewritten with the real endpoint, the 401, the OAuth discovery, and
+their own words. New field in_assistant_directory, because "a person can use
+this in Claude" and "our app may connect to it" are different questions and I
+had collapsed them.
+
+## Regression test
+test_zomato_is_excluded_by_their_rules_not_by_our_ability
+test_reachable_in_claude_is_not_the_same_as_usable_by_us
+test_every_gated_connector_names_its_endpoint  - a gated entry must name a real
+  https endpoint, so a failed guess can never again be recorded as a finding.
+
+## Lesson
+The status was RESTRICTED before and is RESTRICTED after, so nothing in the
+product changed. That is exactly why it is worth logging: I got the right answer
+for a reason that was false. Anyone reading my note would have concluded Zomato
+had shipped nothing, which is the opposite of the truth.
+
+Third time in this project (F-004, F-009, F-012). All three: absence of a
+result treated as evidence of absence. The rule I keep failing to apply is to
+check the primary source I have already cited before writing a conclusion.
+
+## Production relevance
+Zomato ships restaurant discovery, cart creation, ORDER PLACEMENT and QR-code
+payment to AI agents, live, in India. Their own example prompts include "Order
+my usual coffee" and "Reorder from my last order." That is memory-driven
+autonomous spending, shipped. It is the strongest available argument for why
+this project exists, and I nearly filed it as "does not exist".
+
+## Remaining limitation
+We still cannot connect. Their redirect-URI whitelist covers Claude, ChatGPT,
+VS Code and Postman, not localhost, and their README says no third-party apps.
+Both remain true; only the evidence was wrong.

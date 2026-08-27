@@ -476,8 +476,12 @@ Decision: src/orderguard/connectors.py is a directory with four statuses, and
     LIVE          11 Shopify stores. Searched, cart written, cart read back.
     NEEDS_ACCESS  Swiggy. POST https://mcp.swiggy.com -> HTTP 401 on 28 Aug.
                   Real, live, gated. No sandbox, so every order is real money.
-    RESTRICTED    Zomato. No public endpoint resolved. Their manifest terms
-                  prohibit third-party app development.
+    RESTRICTED    Zomato. https://mcp-server.zomato.com/mcp -> 401, with OAuth
+                  discovery published and a verified listing in Claude's own
+                  connector directory. Their README says they are not allowing
+                  third-party apps, and whitelists OAuth redirect URIs for
+                  Claude, ChatGPT, VS Code and Postman only. Corrected in
+                  F-012; the first version claimed no endpoint existed.
     UNAVAILABLE   Zepto, Blinkit, BigBasket. No public agent surface.
 Evidence is recorded rather than a conclusion, because twice in this project a
   search failing to surface something was treated as proof it did not exist and
