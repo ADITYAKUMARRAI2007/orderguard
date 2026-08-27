@@ -18,12 +18,30 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .cart_verifier import ApprovedCartLine, CartExpectation
 from .checkout_guard import ConfirmationResult, confirm_cart, ready_for_checkout
-from .commerce import Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
+from .commerce import GROCERY, Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
+from .commerce.stores import ALL as ALL_STORES
+from .connectors import CONNECTORS, summary as connector_summary
 from .intent_compiler import CompilationResult, compile_intent
 from .llm import provider_from_env
+from .memory import (
+    apply_preferences_to_gaps,
+    chat_history,
+    forget_everything,
+    forget_preference,
+    memory_engine,
+    preferences,
+    recent_orders,
+    remember_chat_turn,
+    set_preference,
+    suggest_reorder,
+)
 from .models import ObservedCart, PurchaseIntent
 
 app = FastAPI(title="OrderGuard", version="0.1.0")
+
+# One database for chat, order history and preferences. Opened once; the module
+# owns it so no request handler can point memory somewhere else.
+MEMORY = memory_engine()
 
 # A dependency-free browser client for the same API. Keeping the client small
 # makes the workflow easy to inspect while the product is being built.
@@ -66,6 +84,9 @@ class ShoppingSession(BaseModel):
     selected_by_item: dict[int, Offer] = Field(default_factory=dict)
     observed_cart: ObservedCart | None = None
     confirmation: ConfirmationResult | None = None
+    # Plain sentences about which remembered values were used. Shown to the
+    # user, because memory applied silently is memory they cannot correct.
+    memory_notes: list[str] = Field(default_factory=list)
 
 
 _SESSIONS: dict[str, ShoppingSession] = {}
@@ -115,18 +136,33 @@ def _expectation(session: ShoppingSession) -> CartExpectation:
 @app.post("/api/sessions", response_model=ShoppingSession)
 def create_session(request: CreateSessionRequest) -> ShoppingSession:
     session_id = str(uuid4())
+    remember_chat_turn(
+        MEMORY, session_id=session_id, user_id=request.user_id,
+        role="user", text=request.request_text,
+    )
+
     result: CompilationResult = compile_intent(
         provider_from_env(),
         user_request=request.request_text,
         intent_id=f"intent_{session_id}",
         user_id=request.user_id,
     )
+
+    # Memory fills gaps only. A store the user named in this request is already
+    # on the intent and wins; a remembered one is used only when they said
+    # nothing, and either way it is announced below.
+    stated = {"store": result.intent.merchant} if result.intent else {}
+    _, notes = apply_preferences_to_gaps(
+        stated, preferences(MEMORY, request.user_id, session_id=session_id)
+    )
+
     session = ShoppingSession(
         session_id=session_id,
         user_id=request.user_id,
         request_text=request.request_text,
         intent=result.intent,
         clarifications=[question.question for question in result.clarifications],
+        memory_notes=notes,
     )
     _SESSIONS[session_id] = session
     return session
@@ -142,6 +178,10 @@ def continue_session(
     call payment, which lets the UI pause safely while the user asks questions.
     """
     session = _session(session_id)
+    remember_chat_turn(
+        MEMORY, session_id=session_id, user_id=session.user_id,
+        role="user", text=request.message,
+    )
     session.request_text = f"{session.request_text}\nUser clarification: {request.message}"
     result = compile_intent(
         provider_from_env(),
@@ -167,10 +207,27 @@ async def search_item(session_id: str, item_index: int) -> SearchOutcome:
         raise HTTPException(status_code=404, detail="unknown requested item")
 
     item = session.intent.items[item_index]
+
+    # A store the user named, or one they told us to remember, narrows the
+    # search. Anything else searches everywhere. Narrowing is announced on the
+    # session; it never happens silently.
+    wanted = session.intent.merchant or preferences(
+        MEMORY, session.user_id, session_id=session_id
+    ).get("store", "")
+    stores = GROCERY
+    if wanted:
+        matched = tuple(
+            s for s in ALL_STORES
+            if wanted.lower() in {s.domain.lower(), s.label.lower()}
+        )
+        if matched:
+            stores = matched
+
     outcome = await search_stores(
         item.requested_product,
         quantity=item.quantity,
         budget_minor=session.intent.maximum_total_paise,
+        stores=stores,
     )
     session.offers_by_item[item_index] = {
         _offer_key(scored.offer): scored.offer for scored in outcome.offers
@@ -243,6 +300,91 @@ def confirm_session_cart(session_id: str) -> ConfirmationResult:
 @app.get("/api/sessions/{session_id}", response_model=ShoppingSession)
 def get_session(session_id: str) -> ShoppingSession:
     return _session(session_id)
+
+
+# --- connectors ------------------------------------------------------------
+
+@app.get("/api/connectors")
+def list_connectors() -> dict:
+    """Every commerce surface we know of, with its real status and evidence.
+
+    Deliberately returns the blocked ones too. "Swiggy is real but we cannot
+    reach it, here is the HTTP code we got" is more useful, and more honest,
+    than a list showing only what happens to work.
+    """
+    return {
+        "summary": connector_summary(),
+        "connectors": [c._asdict() for c in CONNECTORS],
+    }
+
+
+# --- memory ----------------------------------------------------------------
+
+class PreferenceRequest(BaseModel):
+    model_config = STRICT
+
+    key: str = Field(min_length=1)
+    value: str = Field(min_length=1)
+    scope: Literal["always", "session"] = "always"
+    session_id: str = ""
+
+
+@app.get("/api/memory/{user_id}")
+def read_memory(user_id: str, session_id: str = "") -> dict:
+    """What OrderGuard remembers about you, in full.
+
+    Everything it holds is shown. Memory you cannot inspect is memory you
+    cannot correct.
+    """
+    return {
+        "preferences": preferences(MEMORY, user_id, session_id=session_id),
+        "reorder_suggestion": suggest_reorder(MEMORY, user_id),
+        "recent_orders": [
+            {
+                "title": o.title, "store_label": o.store_label,
+                "quantity": o.quantity, "unit_price_paise": o.unit_price_paise,
+                "bought_on": o.created_at.date().isoformat(),
+            }
+            for o in recent_orders(MEMORY, user_id)
+        ],
+        "note": "Nothing here can raise a spending limit or approve a purchase.",
+    }
+
+
+@app.post("/api/memory/{user_id}/preferences")
+def write_preference(user_id: str, request: PreferenceRequest) -> dict:
+    try:
+        set_preference(
+            MEMORY, user_id=user_id, key=request.key, value=request.value,
+            scope=request.scope, session_id=request.session_id,
+        )
+    except ValueError as exc:
+        # The refusal text explains WHY a budget is not storable. Passing it
+        # through unchanged is the point; a bare 400 would teach nobody.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"preferences": preferences(MEMORY, user_id, session_id=request.session_id)}
+
+
+@app.delete("/api/memory/{user_id}/preferences/{key}")
+def delete_preference(user_id: str, key: str) -> dict:
+    return {"removed": forget_preference(MEMORY, user_id, key)}
+
+
+@app.delete("/api/memory/{user_id}")
+def delete_memory(user_id: str) -> dict:
+    """Forget everything about this user. Offered plainly, because it must be."""
+    return {"deleted": forget_everything(MEMORY, user_id)}
+
+
+@app.get("/api/sessions/{session_id}/history")
+def read_history(session_id: str) -> dict:
+    """The conversation, so a reload does not lose the thread."""
+    return {
+        "turns": [
+            {"role": t.role, "text": t.text, "at": t.created_at.isoformat()}
+            for t in chat_history(MEMORY, session_id)
+        ]
+    }
 
 
 @app.get("/app", include_in_schema=False)

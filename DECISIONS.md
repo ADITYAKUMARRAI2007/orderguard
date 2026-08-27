@@ -443,3 +443,48 @@ Downside: the frozen gate list changed after CP-0. Recorded rather than hidden;
   the freeze exists to stop invented counts, not to preserve a known hole.
 Test: tests/test_cart_verifier.py::test_a_silent_price_rise_under_the_cap_is_blocked
       tests/test_checkout_guard.py::test_a_price_rise_under_the_cap_blocks_checkout
+
+## D-025 — What memory is allowed to be
+Date: 2026-08-28
+Context: memory is where a shopping agent quietly stops being safe. "They always
+  buy the large pack" becomes an agent spending money on a guess.
+Decision — four rules, each with a test in tests/test_memory.py:
+  1. Only COMPLETED purchases become memory. remember_completed_order is the
+     only writer of order history and requires a verified payment_id with no
+     default, so an abandoned cart can never become a preference.
+  2. Memory can NEVER raise a spending cap. Preference keys are a CLOSED SET
+     {unit, brand, store, size, diet}. There is no budget, no cap, no
+     auto_approve. No function in the module returns a spending limit, and a
+     structural test asserts no exported name contains budget/cap/limit.
+  3. What the user says now beats what they said before. apply_preferences_to_gaps
+     fills only gaps and returns plain-English notes naming every remembered
+     value it used, so nothing is applied silently.
+  4. A suggestion is not an action. suggest_reorder returns a dict, never an
+     Offer or a cart line, and states that the price will be re-checked.
+Also: session-scoped preferences ("just for today") do not leak between
+  sessions, and forget_everything is offered plainly.
+Downside: the closed key set will need widening as the product grows. That is a
+  deliberate cost — a preference must never be able to grow into a permission.
+
+## D-026 — The connector directory lists what we CANNOT use
+Date: 2026-08-28
+Context: asked to make OrderGuard "well equipped with connectors" for Swiggy,
+  Zomato and others. Faking those integrations would be the single most
+  disqualifying thing this project could do.
+Decision: src/orderguard/connectors.py is a directory with four statuses, and
+  every entry carries the observed evidence and the date it was checked:
+    LIVE          11 Shopify stores. Searched, cart written, cart read back.
+    NEEDS_ACCESS  Swiggy. POST https://mcp.swiggy.com -> HTTP 401 on 28 Aug.
+                  Real, live, gated. No sandbox, so every order is real money.
+    RESTRICTED    Zomato. No public endpoint resolved. Their manifest terms
+                  prohibit third-party app development.
+    UNAVAILABLE   Zepto, Blinkit, BigBasket. No public agent surface.
+Evidence is recorded rather than a conclusion, because twice in this project a
+  search failing to surface something was treated as proof it did not exist and
+  was wrong both times (F-004, F-009). A reader can re-run the probe.
+Refusal recorded in the data: unofficial reverse-engineered servers exist for
+  some Indian quick-commerce apps. We do not use them. They break platform terms
+  and spend real money, and a safety product that starts by breaking a
+  merchant's rules has argued against itself.
+Test: no connector except Razorpay may claim can_order, and Razorpay only in
+  test mode on our own merchant account.

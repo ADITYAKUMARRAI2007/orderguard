@@ -1,10 +1,12 @@
 """The guarded app flow, tested without live merchants or a model key."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from orderguard import app as app_module
 from orderguard.commerce import Offer, ScoredOffer, SearchOutcome
 from orderguard.llm import StubProvider
+from orderguard.memory import memory_engine
 from orderguard.models import CartLine, ObservedCart
 
 
@@ -156,3 +158,130 @@ def test_a_store_the_user_named_is_enforced_at_selection(monkeypatch):
         "offer_key": "freshcart|v1", "explicit_user_selection": True,
     })
     assert allowed.status_code == 200
+
+
+# --- connectors -------------------------------------------------------------
+
+def test_the_connector_directory_shows_what_we_cannot_use(monkeypatch):
+    """A directory listing only what works would be a sales page.
+
+    The blocked entries are the informative ones: Swiggy is real and answered
+    401, Zomato's terms forbid us, Zepto has no public surface at all.
+    """
+    client = TestClient(app_module.app)
+    body = client.get("/api/connectors").json()
+    found = {c["id"]: c for c in body["connectors"]}
+
+    assert found["swiggy"]["status"] == "needs_access"
+    assert "401" in found["swiggy"]["evidence"]
+    assert found["zomato"]["status"] == "restricted"
+    assert found["zepto"]["status"] == "unavailable"
+
+    # and nothing in the directory claims it can place a third-party order
+    assert all(not c["can_order"] for c in body["connectors"] if c["id"] != "razorpay")
+
+
+# --- memory -----------------------------------------------------------------
+
+@pytest.fixture
+def memory_client(monkeypatch):
+    """A client whose memory lives in RAM, never in data/memory.db."""
+    monkeypatch.setattr(app_module, "MEMORY", memory_engine(":memory:"))
+    app_module._SESSIONS.clear()
+    return TestClient(app_module.app)
+
+
+def test_a_spending_limit_cannot_be_stored_through_the_api(memory_client):
+    """The most important refusal in the product, checked at the edge.
+
+    A preference that could carry a budget would let anything able to write a
+    preference decide what the agent may spend.
+    """
+    refused = memory_client.post(
+        "/api/memory/u1/preferences", json={"key": "budget", "value": "999999"}
+    )
+    assert refused.status_code == 422
+    assert "never remembered" in refused.json()["detail"]
+
+    assert memory_client.get("/api/memory/u1").json()["preferences"] == {}
+
+
+def test_a_remembered_store_narrows_the_search_and_says_so(memory_client, monkeypatch):
+    """Memory doing real work — and admitting it.
+
+    Without the preference the search fans out across every grocery store. With
+    it, one store is searched, and the session carries a sentence saying which
+    remembered value was used.
+
+    The request names no store, which is the case memory is for. A store named
+    in the request would win instead.
+    """
+    seen: list[tuple] = []
+
+    async def search(*args, **kwargs):
+        seen.append(kwargs.get("stores"))
+        return _outcome()
+
+    # A request with no merchant in it at all.
+    stub = StubProvider(extra_answers={
+        "one pack of coffee, budget 900 rupees": {
+            "items": [{"requested_product": "coffee", "quantity": 1, "unit": "pack"}],
+            "maximum_total_paise": 90000,
+        }
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
+    monkeypatch.setattr(app_module, "search_stores", search)
+
+    memory_client.post(
+        "/api/memory/u1/preferences", json={"key": "store", "value": "Blue Tokai"}
+    )
+    session = memory_client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "one pack of coffee, budget 900 rupees",
+    }).json()
+
+    assert session["intent"]["merchant"] == ""          # they named no store
+    assert session["memory_notes"] == ["Using your usual store: Blue Tokai."]
+
+    assert memory_client.post(
+        f"/api/sessions/{session['session_id']}/items/0/search"
+    ).status_code == 200
+    assert [s.label for s in seen[0]] == ["Blue Tokai"]
+
+
+def test_the_conversation_is_remembered_across_a_reload(memory_client):
+    session_id = memory_client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "millet cereal, budget 700 rupees",
+    }).json()["session_id"]
+    memory_client.post(
+        f"/api/sessions/{session_id}/messages", json={"message": "make it two packs"}
+    )
+
+    turns = memory_client.get(f"/api/sessions/{session_id}/history").json()["turns"]
+    assert [t["text"] for t in turns] == [
+        "millet cereal, budget 700 rupees",
+        "make it two packs",
+    ]
+
+
+def test_a_user_can_delete_everything_we_hold(memory_client):
+    memory_client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "millet cereal, budget 700 rupees",
+    })
+    memory_client.post(
+        "/api/memory/u1/preferences", json={"key": "brand", "value": "Slurrp Farm"}
+    )
+
+    deleted = memory_client.delete("/api/memory/u1").json()["deleted"]
+    assert deleted["Preference"] == 1
+    assert deleted["ChatTurn"] >= 1
+
+    remaining = memory_client.get("/api/memory/u1").json()
+    assert remaining["preferences"] == {}
+    assert remaining["recent_orders"] == []
+
+
+def test_memory_never_offers_a_purchase_only_a_suggestion(memory_client):
+    """An empty history must not produce something a cart could swallow."""
+    body = memory_client.get("/api/memory/u1").json()
+    assert body["reorder_suggestion"] is None
+    assert "raise a spending limit" in body["note"]
