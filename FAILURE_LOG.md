@@ -428,3 +428,67 @@ while every test still passes.
 ### Remaining limitation
 Visual checks are manual. There is no screenshot-diffing test, and adding one is
 not worth the remaining time.
+
+---
+
+## F-009 — I claimed Swiggy had no MCP server. It does.
+
+**Date:** 2026-08-26 · **Checkpoint:** CP-2 (research, not code)
+
+### What I expected
+A web search for "Zomato Swiggy Zepto MCP server" to surface an official server
+if one existed.
+
+### What happened
+The search returned only Apify scrapers and unofficial reverse-engineered repos.
+I concluded — and told the user — that *"Zomato, Swiggy, Zepto, Blinkit and
+BigBasket have published nothing."*
+
+**That was wrong.** The user pushed back with a specific URL. Fetching
+`mcp.swiggy.com` directly showed an **official Swiggy MCP server**: 49 tools
+across three servers (Food 18, Instamart 19, Dineout 12), including
+`Order placement` and payment tools.
+
+### Root cause
+I treated absence from search results as evidence of absence. Search indexes
+developer subdomains poorly, and `mcp.swiggy.com` is a subdomain, not a
+GitHub repo.
+
+### How I proved the correction
+Direct `WebFetch` of the documented URL. Two pages: the overview confirmed
+official status and the tool count; the Food reference confirmed the tool
+categories and the access model.
+
+### What it changes
+Nothing structural — access is **invite-only whitelist onboarding with a partner
+contract**, and there is **no sandbox or test mode**. So it is unusable for this
+project on two counts: we cannot get access in 9 days, and every call would be a
+real order with real money, which violates our own test-mode-only limitation.
+
+### What it changes in framing (this part matters)
+Swiggy shipping payment and order-placement tools to AI agents makes this
+project's question concrete rather than speculative:
+
+> Swiggy gave agents 49 tools including order placement and payment.
+> What checks the agent's work before it spends?
+
+Decision: mirror Swiggy's six tool categories (discover / cart / payment /
+order / track / support) in our own demo-store MCP server, so the guard layer
+sits in front of the same *shape* of surface that is actually shipping. Cite
+Swiggy as the reason, never as an integration.
+
+### What I learned
+**Same failure as F-004.** There I trusted a models-list endpoint over a real
+request; here I trusted search results over a real fetch. The rule stands and I
+did not follow it: *when a specific URL is checkable, check it.*
+
+Also: the user was right and I was confidently wrong. Worth recording, because
+the correction came from being challenged rather than from my own checking.
+
+### Could this happen in production?
+Yes — concluding a capability does not exist because it was not indexed is how
+teams rebuild things that already ship.
+
+### Remaining limitation
+Zomato's server is still unverified. Community write-ups describe one, but I have
+found no first-party documentation URL. Treat as unknown, not as absent.
