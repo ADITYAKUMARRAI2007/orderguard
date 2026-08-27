@@ -58,7 +58,16 @@ class PurchaseIntent(BaseModel):
 
     intent_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
-    merchant: str = Field(min_length=1)
+
+    # Empty means the shopper did not name a store, which is the normal case:
+    # OrderGuard searches the allowed stores and the store is decided when the
+    # user picks an offer. A non-empty value is a *constraint* the user stated
+    # ("from Blue Tokai") and the selection must honour it.
+    #
+    # This is never the permission check. G_MERCHANT_PERMITTED does that against
+    # the allowed list, and CartExpectation.merchant — which is what the cart is
+    # actually compared to — stays required.
+    merchant: str = ""
     items: list[IntentItem] = Field(default_factory=list)
 
     maximum_total_paise: int = Field(ge=0)

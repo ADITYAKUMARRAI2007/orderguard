@@ -107,14 +107,10 @@ def compile_intent(
 
 def _missing_fields(draft: _DraftIntent) -> list[Clarification]:
     questions: list[Clarification] = []
-    if not draft.merchant:
-        questions.append(
-            Clarification(
-                reason=ClarificationReason.MISSING_MERCHANT,
-                field="merchant",
-                question="Which store would you like to shop from?",
-            )
-        )
+    # The store is deliberately NOT asked for. Finding it is the product: we
+    # search the allowed stores and the user decides by picking an offer. If the
+    # shopper names one themselves, that is kept as a constraint on the draft
+    # and enforced at selection.
     if not draft.items:
         questions.append(
             Clarification(

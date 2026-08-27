@@ -193,6 +193,16 @@ async def select_offer(
     if not offer.available:
         raise HTTPException(status_code=409, detail="selected offer is no longer available")
 
+    # If the shopper named a store, honour it. Matching is exact against the
+    # domain or the label, both lowercased. Nothing fuzzy: "blue" must not be
+    # allowed to select Blue Tokai when the user meant something else.
+    named = session.intent.merchant.strip().lower()
+    if named and named not in {offer.store.lower(), offer.store_label.lower()}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"you asked to shop at {session.intent.merchant}; this offer is from {offer.store_label}",
+        )
+
     existing_stores = {chosen.store for chosen in session.selected_by_item.values()}
     if existing_stores and offer.store not in existing_stores:
         raise HTTPException(
