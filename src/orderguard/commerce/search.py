@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .base import AdapterError, Location, Offer
 from .shopify_mcp import ShopifyMCPAdapter
-from .stores import GROCERY, Store
+from .stores import ALL, Store, for_query
 
 __all__ = ["ScoredOffer", "SearchOutcome", "search_stores", "rank"]
 
@@ -128,11 +128,16 @@ async def search_stores(
     *,
     quantity: int = 1,
     budget_minor: int | None = None,
-    stores: tuple[Store, ...] = GROCERY,
+    stores: tuple[Store, ...] | None = None,
     limit_per_store: int = 5,
     location: Location | None = None,
 ) -> SearchOutcome:
-    """Hit every store at the same time, then rank the combined results."""
+    """Hit the likely stores at the same time, then rank the combined results.
+
+    With no explicit list, the shops are chosen by what they sell. Asking a
+    coffee roaster about lipstick wastes a request and returns noise.
+    """
+    stores = stores or for_query(query)
     async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
         results = await asyncio.gather(
             *(_search_one(s, query, client, limit_per_store, location) for s in stores)
@@ -150,9 +155,23 @@ async def search_stores(
             continue
 
         outcome.stores_searched.append(store.label)
+
+        # How well this SHOP matches the request, separately from any product.
+        # Blue Tokai names its coffee "Attikan Estate": no word of the request
+        # appears in the title, so a pure title match scored it zero and dropped
+        # real coffee while keeping a coffee-scented face wash (F-024).
+        # If we searched a shop because it sells coffee, its products are
+        # relevant to "coffee" whatever they happen to be called.
+        shop_match = (
+            len(wanted & _tokens(store.sells)) / len(wanted) if wanted else 0.0
+        )
+
         for offer in result:
             found = _tokens(f"{offer.title} {offer.variant_title}")
-            relevance = len(wanted & found) / len(wanted) if wanted else 1.0
+            by_title = len(wanted & found) / len(wanted) if wanted else 1.0
+            # A title match is worth more than a shop match: the shop only tells
+            # you the aisle, the title tells you the product.
+            relevance = max(by_title, shop_match * 0.6)
             line_total = offer.total_minor(quantity)
 
             outcome.offers.append(

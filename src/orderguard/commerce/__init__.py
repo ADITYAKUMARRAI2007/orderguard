@@ -11,7 +11,7 @@ from .base import (
 )
 from .search import ScoredOffer, SearchOutcome, rank, search_stores
 from .shopify_mcp import ShopifyMCPAdapter
-from .stores import ALL, GENERAL, GROCERY, Store, by_domain
+from .stores import ALL, BEAUTY, DRINKS, GROCERY, HEALTH, LIFESTYLE, Store, by_domain, for_query
 from ..cart_verifier import (
     ApprovedCartLine,
     CartComparison,
@@ -23,6 +23,7 @@ from ..cart_verifier import (
 __all__ = [
     "AdapterError", "CartLine", "CommerceAdapter", "Location", "ObservedCart", "Offer",
     "StoreUnavailable", "ShopifyMCPAdapter", "ScoredOffer", "SearchOutcome",
-    "rank", "search_stores", "ALL", "GENERAL", "GROCERY", "Store", "by_domain",
+    "rank", "search_stores", "ALL", "BEAUTY", "DRINKS", "GROCERY", "HEALTH",
+    "LIFESTYLE", "Store", "by_domain", "for_query",
     "ApprovedCartLine", "CartComparison", "CartExpectation", "cart_hash", "compare_cart",
 ]

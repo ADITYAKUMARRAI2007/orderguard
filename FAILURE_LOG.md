@@ -1269,3 +1269,62 @@ empty screen.
 ## Remaining limitation
 Client state is still ad-hoc globals rather than something derived from the
 session. Another variable could rot the same way.
+
+# F-024 — Coffee-scented face wash outranked actual coffee
+ID: F-024
+Date: 2026-08-28
+Checkpoint: CP-3
+
+## Expected behaviour
+"coffee beans" returns coffee.
+
+## Actual behaviour
+    Coffee Face Wash - 100 ml       Rs 349   mCaffeine
+    Coffee Body Polishing Oil       Rs 445   mCaffeine
+    Coffee Body Scrub - 100 g       Rs 449   mCaffeine
+Blue Tokai and Sleepy Owl, both actual roasters, contributed nothing.
+
+## Root cause
+Relevance was scored on the product TITLE alone. Blue Tokai names its coffee by
+estate — "Attikan Estate", "Silver Oak Café Blend" — so not one word of the
+request appeared in the title and every result scored zero and was dropped by
+the F-016 filter. mCaffeine sells coffee-SCENTED skincare, whose titles do say
+"Coffee", so they scored 0.5 and survived.
+
+The shop selling the actual thing was eliminated; the shop selling a smell of it
+was promoted.
+
+## Proof
+    Blue Tokai raw results: Attikan Estate, Attikan Estate, Silver Oak Café Blend
+
+## Fix
+Relevance now considers the SHOP as well as the product. Each store declares
+what it sells in plain words; if the request overlaps that, its products get a
+floor of 0.6 of the shop match. A title match still scores higher, because the
+shop only tells you the aisle while the title tells you the product.
+
+    'coffee beans' -> 15 offers, 0 dropped
+        Attikan Estate        Rs 700   Blue Tokai
+        Silver Oak Cafe Blend Rs 750   Blue Tokai
+
+"pizza" still correctly returns nothing: no shop declares pizza, so no shop
+match rescues anything, and the web fallback takes over.
+
+## Regression test
+tests/test_discovery.py::test_a_shop_that_sells_the_thing_counts_even_when_the_title_does_not_say_so
+
+## Lesson
+Lexical matching on titles assumes sellers name products after their category.
+Premium sellers do the opposite — the whole point of "Attikan Estate" is that it
+is not "coffee". The naming style that signals quality is exactly the style that
+defeats a keyword filter.
+
+Knowing WHY a shop was searched is information the ranker was throwing away.
+
+## Production relevance
+An agent that cannot find a product because the seller named it well is not
+useful to the sellers most worth buying from.
+
+## Remaining limitation
+Store subject matter is hand-written. A new store needs its words filled in, and
+a test now fails if they are left blank.

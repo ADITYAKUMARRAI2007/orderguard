@@ -297,3 +297,55 @@ async def test_when_nothing_matches_it_names_what_the_shops_do_sell():
     assert outcome.nothing_matched
     assert not outcome.offers
     assert outcome.suggestions          # something to say instead of nothing
+
+
+# --- routing and store-aware relevance --------------------------------------
+
+def test_a_query_goes_to_the_shops_that_sell_that_kind_of_thing():
+    from orderguard.commerce.stores import for_query
+
+    assert "boat-lifestyle.com" in [s.domain for s in for_query("wireless earbuds")]
+    assert "sugarcosmetics.com" in [s.domain for s in for_query("lipstick")]
+    assert "bluetokaicoffee.com" in [s.domain for s in for_query("coffee")]
+
+
+def test_an_unrecognised_query_asks_every_shop_rather_than_guessing():
+    """A bad routing guess must never be the reason something is not found."""
+    from orderguard.commerce.stores import ALL, for_query
+
+    assert for_query("xylophone") == ALL
+
+
+def test_a_shop_that_sells_the_thing_counts_even_when_the_title_does_not_say_so():
+    """F-024: Blue Tokai names its coffee "Attikan Estate".
+
+    Scoring on the product title alone gave that zero for "coffee beans" and
+    dropped it, while a coffee-scented FACE WASH kept its score and ranked
+    first. If a shop was searched because it sells coffee, its products are
+    relevant to coffee whatever they are called.
+    """
+    from orderguard.commerce.stores import by_domain
+
+    roaster = by_domain("bluetokaicoffee.com")
+    assert "coffee" in roaster.sells        # this is what rescues the match
+    assert "beans" in roaster.sells
+
+
+def test_every_listed_store_declares_what_it_sells():
+    """Routing and relevance both depend on it, so it cannot be blank."""
+    from orderguard.commerce.stores import ALL
+
+    for store in ALL:
+        assert store.sells.strip(), f"{store.domain} declares nothing"
+        assert len(store.sells.split()) >= 3, f"{store.domain} is too vague"
+        assert store.kind in {"grocery", "drinks", "beauty", "health", "lifestyle"}
+
+
+def test_stores_that_cannot_take_a_cart_are_recorded_not_listed():
+    """minimalist.co answers, and can only be browsed. It must not be shoppable."""
+    from orderguard.commerce.stores import ALL, KNOWN_BAD
+
+    domains = {s.domain for s in ALL}
+    for domain in ("minimalist.co", "arata.in", "setu.in"):
+        assert domain not in domains
+        assert "no cart" in KNOWN_BAD[domain]

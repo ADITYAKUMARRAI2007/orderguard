@@ -18,9 +18,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .cart_verifier import ApprovedCartLine, CartExpectation
 from .checkout_guard import ConfirmationResult, confirm_cart, ready_for_checkout
-from .commerce import GROCERY, Location, Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
+from .commerce import Location, Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
 from .commerce.discovery import DiscoveryRefused, discover
-from .commerce.stores import ALL as ALL_STORES, Store
+from .commerce.stores import ALL as ALL_STORES, Store, for_query
 from .connectors import CONNECTORS, summary as connector_summary
 from .intent_compiler import CompilationResult, compile_intent, label_answer
 from .llm import provider_from_env
@@ -316,7 +316,7 @@ async def search_item(session_id: str, item_index: int) -> ItemSearch:
         Store(domain=s.domain, label=s.label, kind="added")
         for s in saved_stores(MEMORY, session.user_id)
     )
-    searchable = GROCERY + added
+    searchable = for_query(item.requested_product) + added
 
     stores = searchable
     if wanted:
