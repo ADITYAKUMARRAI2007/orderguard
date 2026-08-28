@@ -31,6 +31,35 @@ class StoreUnavailable(AdapterError):
     """This particular shop is down or refused us. Others may still work."""
 
 
+class Location(BaseModel):
+    """Where the shopper is, for delivery and relevance.
+
+    Sent to a store as a hint. It is never used in a safety check: a merchant
+    could return anything for any location, so nothing about what we allow may
+    depend on it.
+    """
+
+    model_config = STRICT
+
+    country: str = Field(default="IN", min_length=2, max_length=2)
+    region: str = ""            # "KA"
+    postal_code: str = ""       # "560001"
+    city: str = ""
+
+    def as_context(self) -> dict:
+        context: dict[str, str] = {"address_country": self.country.upper()}
+        if self.region:
+            context["address_region"] = self.region.upper()
+        if self.postal_code:
+            context["postal_code"] = self.postal_code
+        return context
+
+    @property
+    def described(self) -> str:
+        parts = [p for p in (self.city, self.region, self.postal_code) if p]
+        return ", ".join(parts) or self.country
+
+
 class Offer(BaseModel):
     """One buyable thing, from one shop.
 

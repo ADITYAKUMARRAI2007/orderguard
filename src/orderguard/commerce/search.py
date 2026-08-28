@@ -29,7 +29,7 @@ import re
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from .base import AdapterError, Offer
+from .base import AdapterError, Location, Offer
 from .shopify_mcp import ShopifyMCPAdapter
 from .stores import GROCERY, Store
 
@@ -80,6 +80,7 @@ class SearchOutcome(BaseModel):
     query: str
     quantity: int = Field(ge=1)
     budget_minor: int | None = None
+    searched_from: str = ""
     offers: list[ScoredOffer] = Field(default_factory=list)
     stores_searched: list[str] = Field(default_factory=list)
     stores_failed: dict[str, str] = Field(default_factory=dict)
@@ -99,12 +100,13 @@ class SearchOutcome(BaseModel):
 
 
 async def _search_one(
-    store: Store, query: str, client: httpx.AsyncClient, limit: int
+    store: Store, query: str, client: httpx.AsyncClient, limit: int,
+    location: Location | None = None,
 ) -> tuple[Store, list[Offer] | str]:
     """Never raises. A broken store must not take the others down with it."""
     adapter = ShopifyMCPAdapter(store.domain, store.label, client=client)
     try:
-        return store, await adapter.search(query, limit=limit)
+        return store, await adapter.search(query, limit=limit, location=location)
     except AdapterError as exc:
         return store, str(exc)
     except Exception as exc:                    # noqa: BLE001 - isolation is the point
@@ -118,14 +120,18 @@ async def search_stores(
     budget_minor: int | None = None,
     stores: tuple[Store, ...] = GROCERY,
     limit_per_store: int = 5,
+    location: Location | None = None,
 ) -> SearchOutcome:
     """Hit every store at the same time, then rank the combined results."""
     async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
         results = await asyncio.gather(
-            *(_search_one(s, query, client, limit_per_store) for s in stores)
+            *(_search_one(s, query, client, limit_per_store, location) for s in stores)
         )
 
-    outcome = SearchOutcome(query=query, quantity=quantity, budget_minor=budget_minor)
+    outcome = SearchOutcome(
+        query=query, quantity=quantity, budget_minor=budget_minor,
+        searched_from=location.described if location else "",
+    )
     wanted = _tokens(query)
 
     for store, result in results:

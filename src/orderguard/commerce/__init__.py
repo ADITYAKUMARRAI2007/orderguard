@@ -4,6 +4,7 @@ from .base import (
     AdapterError,
     CartLine,
     CommerceAdapter,
+    Location,
     ObservedCart,
     Offer,
     StoreUnavailable,
@@ -20,7 +21,7 @@ from ..cart_verifier import (
 )
 
 __all__ = [
-    "AdapterError", "CartLine", "CommerceAdapter", "ObservedCart", "Offer",
+    "AdapterError", "CartLine", "CommerceAdapter", "Location", "ObservedCart", "Offer",
     "StoreUnavailable", "ShopifyMCPAdapter", "ScoredOffer", "SearchOutcome",
     "rank", "search_stores", "ALL", "GENERAL", "GROCERY", "Store", "by_domain",
     "ApprovedCartLine", "CartComparison", "CartExpectation", "cart_hash", "compare_cart",

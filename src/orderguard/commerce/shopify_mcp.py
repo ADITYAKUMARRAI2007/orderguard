@@ -40,7 +40,7 @@ from decimal import Decimal, InvalidOperation
 
 import httpx
 
-from .base import AdapterError, CartLine, ObservedCart, Offer, StoreUnavailable
+from .base import AdapterError, CartLine, Location, ObservedCart, Offer, StoreUnavailable
 
 __all__ = ["ShopifyMCPAdapter", "minor_from_search", "minor_from_cart"]
 
@@ -168,10 +168,20 @@ class ShopifyMCPAdapter:
 
     # --- the four operations ----------------------------------------------
 
-    async def search(self, query: str, limit: int = 10) -> list[Offer]:
+    async def search(
+        self, query: str, limit: int = 10, location: Location | None = None
+    ) -> list[Offer]:
+        """Search a store's catalogue.
+
+        ``location`` is passed through as Shopify's buyer context. Note what is
+        NOT passed: ``filters.price``. The endpoint accepts a price ceiling and
+        does not honour it — asking for products under Rs 300 returned two above
+        Rs 300 (F-013). Budget filtering is done in our own code, where it can be
+        trusted, and this call must not imply otherwise.
+        """
+        context = (location or Location(country=self.country)).as_context()
         body = await self._call(
-            "search_catalog",
-            {"catalog": {"query": query, "context": {"address_country": self.country}}},
+            "search_catalog", {"catalog": {"query": query, "context": context}}
         )
 
         offers: list[Offer] = []

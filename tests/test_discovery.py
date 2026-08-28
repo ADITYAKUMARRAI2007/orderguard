@@ -5,6 +5,8 @@ outbound request we make on their behalf, which is exactly the shape of a
 server-side request forgery.
 """
 
+import json
+
 import httpx
 import pytest
 
@@ -196,3 +198,50 @@ async def test_probing_many_keeps_a_refusal_as_a_result():
     assert results[0].shoppable
     assert not results[1].reachable and "not a shop" in results[1].error
     assert results[2].shoppable
+
+
+# --- location ---------------------------------------------------------------
+
+def test_a_location_becomes_shopify_buyer_context():
+    from orderguard.commerce.base import Location
+
+    context = Location(country="in", region="ka", postal_code="560001").as_context()
+    assert context == {
+        "address_country": "IN", "address_region": "KA", "postal_code": "560001",
+    }
+
+
+def test_an_empty_location_sends_only_the_country():
+    from orderguard.commerce.base import Location
+
+    assert Location().as_context() == {"address_country": "IN"}
+
+
+@pytest.mark.asyncio
+async def test_the_store_is_never_asked_to_enforce_a_budget():
+    """F-013: Shopify accepts filters.price and ignores it.
+
+    Asking slurrpfarm.com for products under ₹300 returned two above ₹300. A
+    budget the user stated must therefore never be delegated to the merchant —
+    it is checked in our own code, and this request must not imply otherwise by
+    sending a filter we know is not honoured.
+    """
+    from orderguard.commerce.base import Location
+    from orderguard.commerce.shopify_mcp import ShopifyMCPAdapter
+
+    sent = {}
+
+    def handler(request):
+        sent.update(json.loads(request.content))
+        return httpx.Response(200, json={
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"content": [{"type": "text", "text": json.dumps({"products": []})}]},
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        adapter = ShopifyMCPAdapter("shop.example", client=client)
+        await adapter.search("cereal", location=Location(postal_code="560001"))
+
+    catalog = sent["params"]["arguments"]["catalog"]
+    assert catalog["context"]["postal_code"] == "560001"
+    assert "filters" not in catalog, "a price filter the store ignores must not be sent"

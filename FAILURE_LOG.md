@@ -678,3 +678,56 @@ this project exists, and I nearly filed it as "does not exist".
 We still cannot connect. Their redirect-URI whitelist covers Claude, ChatGPT,
 VS Code and Postman, not localhost, and their README says no third-party apps.
 Both remain true; only the evidence was wrong.
+
+# F-013 — Shopify accepts a price filter and ignores it
+ID: F-013
+Date: 2026-08-28
+Checkpoint: CP-4 (location-aware search)
+Command: probe against slurrpfarm.com with filters.price.max = 30000
+Seed: n/a
+
+## Expected behaviour
+search_catalog's documented input schema includes
+  filters.price = {min, max}  "in ISO 4217 minor units (e.g., 5000 = $50.00)"
+Asking for products under Rs 300 should return products under Rs 300.
+
+## Actual behaviour
+10 results came back. TWO of them were above Rs 300 (Rs 311 twice). The filter
+was accepted without error and had no effect on the result set.
+Passing a Bangalore postal_code also changed nothing in the results.
+
+## Root cause
+Not our bug. The endpoint advertises a capability in its schema that this store
+does not honour. Whether it is per-store, silently ignored, or only applies to
+some catalogues, we do not know — and that uncertainty is the point.
+
+## Proof
+    filters={"price":{"max":30000}} -> 10 results, 2 above 30000
+
+## Fix
+We do not send filters.price at all, and the budget is computed in our own code
+(search.py sets within_budget from line_total <= budget_minor). A regression
+test asserts the outgoing request contains no "filters" key.
+
+## Regression test
+tests/test_discovery.py::test_the_store_is_never_asked_to_enforce_a_budget
+
+## Lesson
+A published schema describes what a server will ACCEPT, not what it will DO.
+I nearly wired the user's spending limit straight into that parameter, which
+would have shipped a budget filter that silently does not filter — the user
+believing their limit was applied at search time when nothing enforced it.
+
+This is the same family as F-010: a check that appears to exist and does not.
+The difference is that here the false check would have been someone else's.
+
+## Production relevance
+Direct. Never delegate a user's spending limit to a merchant's API. The merchant
+has no obligation to enforce it, no incentive to, and no way to be held to it.
+Limits belong on our side of the wire.
+
+## Remaining limitation
+Location is still passed through as buyer context because stores that DO honour
+it will give better results. It changed nothing on the store we tested, so no
+claim is made that it improves relevance — and nothing in a safety check depends
+on it.

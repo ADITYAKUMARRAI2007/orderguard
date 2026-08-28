@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .cart_verifier import ApprovedCartLine, CartExpectation
 from .checkout_guard import ConfirmationResult, confirm_cart, ready_for_checkout
-from .commerce import GROCERY, Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
+from .commerce import GROCERY, Location, Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
 from .commerce.discovery import DiscoveryRefused, discover
 from .commerce.stores import ALL as ALL_STORES, Store
 from .connectors import CONNECTORS, summary as connector_summary
@@ -64,6 +64,11 @@ class CreateSessionRequest(BaseModel):
 
     user_id: str = Field(min_length=1)
     request_text: str = Field(min_length=1, max_length=2_000)
+    # Where to deliver. Sent to stores as a hint and shown to the user; never
+    # used in a safety check, since a merchant controls what it returns for it.
+    postal_code: str = Field(default="", max_length=12)
+    region: str = Field(default="", max_length=8)
+    city: str = Field(default="", max_length=64)
 
 
 class ContinueSessionRequest(BaseModel):
@@ -96,6 +101,7 @@ class ShoppingSession(BaseModel):
     # Plain sentences about which remembered values were used. Shown to the
     # user, because memory applied silently is memory they cannot correct.
     memory_notes: list[str] = Field(default_factory=list)
+    location: Location | None = None
 
 
 _SESSIONS: dict[str, ShoppingSession] = {}
@@ -165,6 +171,12 @@ def create_session(request: CreateSessionRequest) -> ShoppingSession:
         stated, preferences(MEMORY, request.user_id, session_id=session_id)
     )
 
+    location = Location(
+        postal_code=request.postal_code, region=request.region, city=request.city
+    )
+    if location.postal_code or location.city:
+        notes.append(f"Delivering to {location.described}.")
+
     session = ShoppingSession(
         session_id=session_id,
         user_id=request.user_id,
@@ -172,6 +184,7 @@ def create_session(request: CreateSessionRequest) -> ShoppingSession:
         intent=result.intent,
         clarifications=[question.question for question in result.clarifications],
         memory_notes=notes,
+        location=location,
     )
     _SESSIONS[session_id] = session
     return session
@@ -246,6 +259,7 @@ async def search_item(session_id: str, item_index: int) -> SearchOutcome:
         quantity=item.quantity,
         budget_minor=session.intent.maximum_total_paise,
         stores=stores,
+        location=session.location,
     )
     session.offers_by_item[item_index] = {
         _offer_key(scored.offer): scored.offer for scored in outcome.offers
