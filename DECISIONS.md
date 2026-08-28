@@ -610,3 +610,50 @@ Not built, deliberately: driving a browser to log in and buy on Flipkart or
   contradict the project's own thesis. Where a login is genuinely needed the
   user does it themselves at the checkout page, which is also where their card
   details go.
+
+## D-030 — The Razorpay payment leg: what is real, what is next
+Date: 2026-08-28
+Context: eight days from CP-0, the payment leg had not been started. This
+decision records what was built and, honestly, what was deliberately left for
+the next session rather than faked.
+Built and tested:
+  - razorpay_client.py: httpx only (D-017), refuses any non rzp_test_ key at
+    construction, create_order and fetch_payment. VERIFIED LIVE: a real order
+    was created against the real Razorpay test API while writing this
+    (order_TVHMqLNOOLkgwt, Rs 132.00), and fetching an unknown payment id
+    correctly raised rather than returning something that looked like success.
+  - payment.py: verify_payment implements API_CONTRACTS.md #6 exactly — HMAC
+    computed and checked with hmac.compare_digest BEFORE any network call, then
+    an independent fetch, then exact equality on order_id/status/amount/
+    currency. 18 unit tests, including: a forged signature never reaches the
+    network; a valid signature for the WRONG payment_id is rejected; a captured
+    payment for the wrong amount is rejected; a float amount is rejected rather
+    than coerced.
+  - ledger.py: the idempotency contract from #5, merchant|intent_id|action|
+    cart_hash, enforced by a DB UNIQUE constraint claimed before any Razorpay
+    call. claim_order is idempotent (a retried "create order" returns the SAME
+    order, never a second one). finalize_if_pending is an atomic
+    UPDATE ... WHERE status='pending', so only the first of any number of
+    callers can ever move a row to CAPTURED.
+  - Wired into the app: /payment/order runs all twelve pre-payment gates with
+    REAL evidence (this had never been done — confirm_cart only froze a hash,
+    nothing had evaluated MERCHANT_PERMITTED/CART_UNIQUE/ATTRIBUTES_MATCH/
+    ITEMS_AVAILABLE/IDEMPOTENCY_FREE before this). /payment/verify is the only
+    path that calls remember_completed_order, and only on the ONE call that
+    wins the finalize race.
+  - Proven at the HTTP level, not just the function level:
+    test_seventy_verify_calls_after_one_real_payment_capture_exactly_once posts
+    to the real endpoint 70 times with a genuinely computed signature and
+    asserts one capture, one order-history row, 69 identical cached replies.
+Deliberately NOT done in this pass, and stated here rather than glossed over:
+  - No CommerceAdapter connects the running app's search/cart flow to FreshCart
+    (demo_store). Real carts today come only from Shopify stores, and D-020
+    already establishes that Razorpay must never appear to pay a Shopify
+    store's own money — Shopify collects its own checkout. So a full manual
+    browser proof (typing success@razorpay end to end) needs FreshCart wired as
+    a live adapter first. That is the next task, not a hidden gap.
+  - Post-payment reconciliation gates that need a real merchant-side order
+    record (SINGLE_CANDIDATE, CORRELATION, ORDER_REPAIRABLE, NOT_EXPIRED,
+    NO_PRIOR_EFFECT) are not implemented — there is no merchant order to
+    reconcile against yet for the same reason. PAYMENT_CAPTURED, AMOUNT_MATCH
+    and CURRENCY_MATCH_POST are already fully covered by verify_payment itself.

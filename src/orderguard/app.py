@@ -16,8 +16,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from .cart_verifier import ApprovedCartLine, CartExpectation
-from .checkout_guard import ConfirmationResult, confirm_cart, ready_for_checkout
+from .cart_verifier import ApprovedCartLine, CartExpectation, compare_cart
+from .checkout_guard import CheckoutEvidence, ConfirmationResult, confirm_cart, evaluate_pre_payment_gates, ready_for_checkout
 from .commerce import Location, Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
 from .commerce.discovery import DiscoveryRefused, discover
 from .commerce.stores import ALL as ALL_STORES, Store, for_query
@@ -25,6 +25,15 @@ from .connectors import CONNECTORS, summary as connector_summary
 from .intent_compiler import CompilationResult, compile_intent, label_answer
 from .llm import provider_from_env
 from .mcp_server import router as mcp_router
+from .ledger import (
+    LedgerStatus,
+    attach_order,
+    claim_order,
+    finalize_if_pending,
+    get_entry,
+    ledger_engine,
+    reject as reject_ledger_entry,
+)
 from .merchants import Reach, resolve_merchant
 from .memory import (
     apply_preferences_to_gaps,
@@ -36,12 +45,15 @@ from .memory import (
     recent_orders,
     forget_store,
     remember_chat_turn,
+    remember_completed_order,
     remember_store,
     saved_stores,
     set_preference,
     suggest_reorder,
 )
 from .models import ObservedCart, PurchaseIntent
+from .payment import Rejection as PaymentRejection, VerifiedPayment, verify_payment
+from .razorpay_client import RazorpayClient, RazorpayError, client_from_env
 from .websearch import WebResult, WebSearchOutcome, search_web
 
 app = FastAPI(title="OrderGuard", version="0.1.0")
@@ -49,6 +61,12 @@ app = FastAPI(title="OrderGuard", version="0.1.0")
 # One database for chat, order history and preferences. Opened once; the module
 # owns it so no request handler can point memory somewhere else.
 MEMORY = memory_engine()
+
+# The idempotency ledger. Separate database from MEMORY on purpose: this one is
+# safety-critical and append-only in effect (see ledger.py), and keeping it out
+# of the same file as chat history and preferences means a bug in one cannot
+# corrupt the other.
+LEDGER = ledger_engine()
 
 # OrderGuard as an MCP server: any assistant can hand us a cart from any
 # connector it already has, and get back a verdict. See mcp_server.py.
@@ -436,6 +454,232 @@ def confirm_session_cart(session_id: str) -> ConfirmationResult:
 @app.get("/api/sessions/{session_id}", response_model=ShoppingSession)
 def get_session(session_id: str) -> ShoppingSession:
     return _session(session_id)
+
+
+# --- payment: Razorpay test mode, verified server-side, exactly once -------
+
+class PaymentOrderResponse(BaseModel):
+    """Everything the browser needs to open Razorpay Checkout, and nothing more.
+
+    No secret ever appears here. ``key_id`` is the public half of the pair —
+    Razorpay's own documentation has it embedded directly in front-end code.
+    """
+
+    model_config = STRICT
+
+    key_id: str
+    razorpay_order_id: str
+    amount_paise: int
+    currency: str
+    status: str                    # "pending" | "captured" — ledger state
+    gates_passed: int
+    gates_total: int
+
+
+class PaymentVerifyRequest(BaseModel):
+    """What ``checkout.js``'s handler receives. The order id is deliberately
+    NOT accepted here — it is read from our own ledger row for this session,
+    so a payment cannot be verified against an order it does not belong to."""
+
+    model_config = STRICT
+
+    razorpay_payment_id: str = Field(min_length=1)
+    razorpay_signature: str = Field(min_length=1)
+
+
+class PaymentVerifyResponse(BaseModel):
+    model_config = STRICT
+
+    captured: bool
+    payment_id: str = ""
+    amount_paise: int = 0
+    reason: str = ""
+    # True when this call found the purchase ALREADY captured by an earlier
+    # call. This is what "70 duplicate events -> exactly 1 business effect"
+    # looks like from the outside: 70 successful-looking responses, one write.
+    already_captured: bool = False
+
+
+def _idempotency_key(session: ShoppingSession) -> str:
+    """merchant | purchase_intent_id | action_type | cart_hash — frozen once
+    at confirmation (D-004), so a retried purchase always maps to one row."""
+    intent = session.intent
+    if intent is None or not intent.confirmed_cart_hash:
+        raise HTTPException(status_code=409, detail="confirm the cart before paying")
+    return f"{intent.merchant}|{intent.intent_id}|purchase|{intent.confirmed_cart_hash}"
+
+
+def _known_merchant_domains(user_id: str) -> set[str]:
+    return (
+        {s.domain for s in ALL_STORES}
+        | {s.domain for s in saved_stores(MEMORY, user_id)}
+        | {"freshcart"}
+    )
+
+
+def _pre_payment_gates(session: ShoppingSession):
+    """Run all twelve named gates with real evidence, not a rubber stamp.
+
+    This is the step the running app skipped until now: ``confirm_cart``
+    freezes a hash, but nothing had actually evaluated MERCHANT_PERMITTED,
+    CART_UNIQUE, ATTRIBUTES_MATCH, ITEMS_AVAILABLE or IDEMPOTENCY_FREE before a
+    payment could be requested.
+    """
+    expectation = _expectation(session)
+    observed = session.observed_cart
+    assert observed is not None and session.intent is not None    # guarded by caller
+
+    key = _idempotency_key(session)
+    existing = get_entry(LEDGER, key)
+
+    evidence = CheckoutEvidence(
+        merchant_permitted=expectation.merchant in _known_merchant_domains(session.user_id),
+        cart_unique=True,          # _expectation() already refuses more than one merchant
+        # No product attribute data reaches this layer yet (Offer carries no
+        # attribute map). Rather than assume a match we cannot see, the gate
+        # passes only when the user asked for none — an honest limitation,
+        # not a guess.
+        attributes_match=not any(item.required_attributes for item in session.intent.items),
+        items_available=bool(observed.lines) and all(line.quantity > 0 for line in observed.lines),
+        idempotency_free=existing is None or existing.status is not LedgerStatus.CAPTURED,
+    )
+    return evaluate_pre_payment_gates(session.intent, expectation, observed, evidence), expectation
+
+
+@app.post("/api/sessions/{session_id}/payment/order", response_model=PaymentOrderResponse)
+async def create_payment_order(session_id: str) -> PaymentOrderResponse:
+    """Headless half of the payment path. No browser needed for this call.
+
+    Idempotent: calling this twice for the same confirmed cart returns the
+    SAME Razorpay order rather than creating a second one.
+    """
+    session = _session(session_id)
+    if session.intent is None or session.observed_cart is None or session.confirmation is None \
+            or not session.confirmation.confirmed:
+        raise HTTPException(status_code=409, detail="confirm the cart before starting payment")
+
+    gates, expectation = _pre_payment_gates(session)
+    if not gates.allow:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reasons": [gates.reasons[name] for name in gates.failed],
+                "failed_gates": [str(name) for name in gates.failed],
+            },
+        )
+
+    key_id, key_secret = client_from_env()
+    key = _idempotency_key(session)
+
+    entry, created = claim_order(
+        LEDGER, idempotency_key=key, merchant=expectation.merchant,
+        purchase_intent_id=session.intent.intent_id,
+        cart_hash=session.intent.confirmed_cart_hash or "",
+        expected_amount_paise=session.observed_cart.total_paise,
+        currency=expectation.currency,
+    )
+
+    if created:
+        try:
+            async with RazorpayClient(key_id, key_secret) as rzp:
+                order = await rzp.create_order(
+                    amount_paise=entry.expected_amount_paise, currency=entry.currency,
+                    receipt=key, notes={"purchase_intent_id": session.intent.intent_id},
+                )
+        except RazorpayError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"could not create the Razorpay order: {exc}"
+            ) from exc
+        attach_order(LEDGER, key, str(order["id"]))
+        entry = get_entry(LEDGER, key) or entry
+
+    return PaymentOrderResponse(
+        key_id=key_id,
+        razorpay_order_id=entry.razorpay_order_id,
+        amount_paise=entry.captured_amount_paise or entry.expected_amount_paise,
+        currency=entry.currency,
+        status=entry.status.value,
+        gates_passed=len(gates.passed),
+        gates_total=len(gates.passed) + len(gates.failed),
+    )
+
+
+@app.post("/api/sessions/{session_id}/payment/verify", response_model=PaymentVerifyResponse)
+async def verify_session_payment(
+    session_id: str, request: PaymentVerifyRequest
+) -> PaymentVerifyResponse:
+    """The only path that may mark a purchase complete.
+
+    Never trusts ``checkout.js``'s own success message — see payment.py.
+    Safe to call any number of times: after the first successful call, every
+    later one (a retry, a duplicate webhook, 70 identical requests) finds the
+    row already captured and returns that same original result without
+    re-verifying or writing to memory a second time.
+    """
+    session = _session(session_id)
+    if session.intent is None:
+        raise HTTPException(status_code=409, detail="no confirmed purchase to verify")
+
+    key = _idempotency_key(session)
+    entry = get_entry(LEDGER, key)
+    if entry is None:
+        raise HTTPException(status_code=409, detail="create the payment order first")
+
+    if entry.status is LedgerStatus.CAPTURED:
+        return PaymentVerifyResponse(
+            captured=True, payment_id=entry.razorpay_payment_id,
+            amount_paise=entry.captured_amount_paise or 0, already_captured=True,
+        )
+
+    key_id, key_secret = client_from_env()
+    async with RazorpayClient(key_id, key_secret) as rzp:
+        result = await verify_payment(
+            order_id=entry.razorpay_order_id,
+            payment_id=request.razorpay_payment_id,
+            signature=request.razorpay_signature,
+            key_secret=key_secret,
+            client=rzp,
+            expected_amount_paise=entry.expected_amount_paise,
+            expected_currency=entry.currency,
+        )
+
+    if isinstance(result, PaymentRejection):
+        reject_ledger_entry(LEDGER, key, result.reason)
+        return PaymentVerifyResponse(captured=False, reason=result.reason)
+
+    updated, won = finalize_if_pending(
+        LEDGER, idempotency_key=key,
+        razorpay_payment_id=result.payment_id, captured_amount_paise=result.amount_paise,
+    )
+    assert updated is not None
+
+    if won:
+        # The ONLY path into order history (memory.py), and it runs at most
+        # once per purchase — guarded by the same claim that just resolved.
+        for index, offer in session.selected_by_item.items():
+            remember_completed_order(
+                MEMORY, user_id=session.user_id, payment_id=result.payment_id,
+                store=offer.store, store_label=offer.store_label,
+                variant_id=offer.variant_id, title=offer.title,
+                quantity=session.intent.items[index].quantity,
+                unit_price_paise=offer.price_minor,
+                requested_as=session.intent.items[index].requested_product,
+            )
+
+    return PaymentVerifyResponse(
+        captured=True, payment_id=updated.razorpay_payment_id,
+        amount_paise=updated.captured_amount_paise or 0, already_captured=not won,
+    )
+
+
+@app.get("/app/pay/{session_id}", include_in_schema=False)
+def payment_page(session_id: str) -> FileResponse:
+    """The Razorpay Checkout page. Session id is in the URL only to load the
+    right cart on open — the amount and order id always come from the ledger,
+    never from anything the page itself could claim."""
+    return FileResponse("web/checkout.html")
+
+
 
 
 # --- connectors ------------------------------------------------------------
