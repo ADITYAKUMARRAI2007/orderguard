@@ -965,3 +965,95 @@ Price comparison without the merchant name is not price comparison.
 Shopping links still point at Google Shopping rather than the merchant's own
 page. Organic results supply real merchant links, but they are not always the
 same product as the priced shopping entry.
+
+# F-019 — My fix for F-014 turned three items into a quantity of 111
+ID: F-019
+Date: 2026-08-28
+Checkpoint: CP-3
+Command: make app -> "Find me a healthy breakfast under 400"
+         -> "1 bowl oats 1 dozen eggs and 1 kg apple"
+
+## Expected behaviour
+Three items: 1 oats, 12 eggs, 1 apple.
+
+## Actual behaviour
+    items: [('healthy breakfast', 111)]
+    offers=0  dropped=25
+One item, quantity ONE HUNDRED AND ELEVEN, and no results. Found by the user.
+
+## Root cause
+Mine, and it was one line. label_answer did:
+
+    digits = re.sub(r"[^\d]", "", text)
+
+which strips every non-digit and glues the rest together. "1 bowl oats 1 dozen
+eggs and 1 kg apple" leaves "111".
+
+The deeper error was assuming the answer to "how many?" is always a quantity.
+Here the user was not answering the question — they were restating the order,
+which is a perfectly normal thing to do and the code had no way to express it.
+
+## Proof
+    label_answer("items[0].quantity", "1 bowl oats 1 dozen eggs and 1 kg apple")
+      -> "Quantity for item 1: 111"
+
+## Fix
+Find each number separately with a findall. Exactly one number means it answers
+the question. More than one means it does not, so the reply is passed through as
+a restatement and the whole request is read again.
+
+    items: [('oats', 1), ('eggs', 12), ('apple', 1)]
+
+## Regression test
+tests/test_intent_compiler.py::test_several_numbers_in_one_answer_never_become_one_quantity
+
+## Lesson
+A quantity of 111 is exactly the failure this project exists to catch, and I
+wrote it into the intent compiler while fixing a different bug. The gates would
+have caught it at the cart — 111 packs is far over any cap — but the intent
+itself was already wrong, and everything downstream is checked against the
+intent. A bad intent is not something the gates can see past.
+
+Fixing a bug is when to be most careful, not least.
+
+## Production relevance
+Direct. The whole product rests on the intent being what the user actually said.
+
+## Remaining limitation
+Worded quantities ("a couple", "half a dozen") still go to the model.
+
+
+# F-020 — "healthy breakfast" returned nothing at all
+ID: F-020
+Date: 2026-08-28
+Checkpoint: CP-3
+
+## Expected behaviour
+Something useful for a category the shops clearly stock.
+
+## Actual behaviour
+    'healthy breakfast'  offers=0  dropped=25
+A blank panel reading "No usable options were returned."
+
+## Root cause
+The relevance floor added in F-016 works on word overlap. "healthy breakfast" is
+a CATEGORY; no product is titled that, so every one of the 25 results scored 0
+and all were dropped. Before F-016 the same search showed 25 wrong products;
+after it, nothing. Neither is an answer.
+
+## Fix
+When nothing matches, the search now returns what those shops DO sell, so the
+app can name real products and ask. Blueberry Millet Pancake Mix, Multi-seed
+Millet cookies, Berry Crunch Ragi Stars.
+
+## Regression test
+tests/test_discovery.py::test_when_nothing_matches_it_names_what_the_shops_do_sell
+
+## Lesson
+F-016 replaced wrong answers with no answer and I called it fixed. A refusal is
+only safe when it leaves the user somewhere to go. "I found nothing" is a dead
+end; "no exact match, these shops sell these things" is a question.
+
+## Remaining limitation
+Matching is still lexical. "Healthy breakfast" and "millet porridge" are related
+only in a person's head, and nothing here knows that.

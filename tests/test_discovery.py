@@ -280,3 +280,20 @@ async def test_nothing_matched_is_false_when_the_stores_simply_had_nothing():
 
     quiet = SearchOutcome(query="pizza", quantity=1)
     assert not quiet.nothing_matched          # nothing came back at all
+
+
+@pytest.mark.asyncio
+async def test_when_nothing_matches_it_names_what_the_shops_do_sell():
+    """A blank screen is a dead end. "healthy breakfast" is a category, not a
+    product name, so it matches no title anywhere — but those shops plainly do
+    sell breakfast things, and naming them turns a dead end into a question."""
+    from orderguard.commerce.base import Offer
+    from orderguard.commerce.search import SearchOutcome
+
+    outcome = SearchOutcome(query="healthy breakfast", quantity=1)
+    outcome.suggestions = ["Blueberry Millet Pancake Mix", "Multi-seed Millet cookies"]
+    outcome.irrelevant_dropped = 25
+
+    assert outcome.nothing_matched
+    assert not outcome.offers
+    assert outcome.suggestions          # something to say instead of nothing

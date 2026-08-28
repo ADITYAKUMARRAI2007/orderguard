@@ -144,18 +144,29 @@ def label_answer(field: str, answer: str) -> str:
     question, so code should be able to read the answer.
     """
     text = (answer or "").strip()
-    digits = re.sub(r"[^\d]", "", text)
+
+    # Every separate number in the reply, not the digits glued together.
+    # "1 bowl oats 1 dozen eggs and 1 kg apple" once became the quantity 111,
+    # because stripping non-digits from that string leaves "111" (F-019).
+    numbers = re.findall(r"\d[\d,]*", text)
+
+    # More than one number means this is not a plain answer to "how many?" —
+    # the user has restated their whole order. Forcing it into one field would
+    # invent a quantity nobody asked for. Pass it through and let the request be
+    # read again as a whole.
+    if len(numbers) > 1:
+        return f"Correction, read this as the full order: {text}"
+
+    only = int(numbers[0].replace(",", "")) if numbers else None
 
     if field.endswith(".quantity"):
         index = re.search(r"\[(\d+)\]", field)
         which = f" for item {int(index.group(1)) + 1}" if index else ""
-        if digits:
-            return f"Quantity{which}: {int(digits)}"
-        return f"Quantity{which}: {text}"
+        return f"Quantity{which}: {only if only is not None else text}"
 
     if field == "maximum_total_paise":
-        if digits:
-            return f"Total budget including delivery: {int(digits)} rupees"
+        if only is not None:
+            return f"Total budget including delivery: {only} rupees"
         return f"Total budget including delivery: {text}"
 
     if field == "merchant":

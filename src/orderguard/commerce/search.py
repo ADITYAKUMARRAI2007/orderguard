@@ -85,6 +85,10 @@ class SearchOutcome(BaseModel):
     stores_searched: list[str] = Field(default_factory=list)
     stores_failed: dict[str, str] = Field(default_factory=dict)
     irrelevant_dropped: int = 0
+    # When nothing matches the words used, what these shops DO sell. A category
+    # like "healthy breakfast" is not a product name and matches no title, so a
+    # blank screen is a dead end. Naming real products turns it into a question.
+    suggestions: list[str] = Field(default_factory=list)
 
     @property
     def any_results(self) -> bool:
@@ -171,8 +175,22 @@ async def search_stores(
     # sell that" is a better answer than a confident list of the wrong things.
     relevant = [offer for offer in outcome.offers if offer.relevance > 0]
     outcome.irrelevant_dropped = len(outcome.offers) - len(relevant)
-    outcome.offers = rank(relevant)
 
+    if not relevant and outcome.offers:
+        # Nothing matched the words asked for. Rather than a blank, show what
+        # these shops actually stock so the user can pick a real search term.
+        # "healthy breakfast" is a category; "millet porridge" is a product.
+        seen: set[str] = set()
+        for scored in rank(outcome.offers):
+            title = scored.offer.title.strip()
+            key = title.lower()[:40]
+            if title and key not in seen:
+                seen.add(key)
+                outcome.suggestions.append(title)
+            if len(outcome.suggestions) == 6:
+                break
+
+    outcome.offers = rank(relevant)
     return outcome
 
 

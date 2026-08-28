@@ -140,3 +140,36 @@ def test_a_provider_outage_does_not_blame_the_user():
     assert "Nothing was ordered" in question
     assert "understand" not in question.lower()
     assert "LLMUnavailable" in result.model_error
+
+
+def test_several_numbers_in_one_answer_never_become_one_quantity():
+    """F-019: my own fix for F-014 created a worse bug.
+
+    Stripping non-digits from "1 bowl oats 1 dozen eggs and 1 kg apple" leaves
+    "111", so the user was about to be quoted for 111 of something. An answer
+    holding more than one number is not an answer to "how many?" — it is the
+    order, restated.
+    """
+    from orderguard.intent_compiler import label_answer
+
+    answer = "1 bowl oats 1 dozen eggs and 1 kg apple"
+    labelled = label_answer("items[0].quantity", answer)
+
+    assert "111" not in labelled
+    assert labelled.startswith("Correction, read this as the full order:")
+    assert answer in labelled
+
+
+def test_a_single_number_is_still_read_as_the_quantity():
+    from orderguard.intent_compiler import label_answer
+
+    assert label_answer("items[0].quantity", "just 2 please") == "Quantity for item 1: 2"
+    assert label_answer("maximum_total_paise", "about 1,200 rupees") == (
+        "Total budget including delivery: 1200 rupees"
+    )
+
+
+def test_a_worded_answer_is_passed_through_for_the_model_to_read():
+    from orderguard.intent_compiler import label_answer
+
+    assert label_answer("items[0].quantity", "a couple") == "Quantity for item 1: a couple"
