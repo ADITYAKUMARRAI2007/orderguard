@@ -85,8 +85,19 @@ async function api(path, options = {}) {
   return body;
 }
 
+// Which item of the current request we are searching. It MUST be reset for
+// every new request: it was only initialised at page load, so after one
+// single-item order it stayed at 1, and the next request hit
+// `1 >= items.length` and skipped searching altogether. The laptop worked and
+// every request after it silently found nothing (F-023).
+function resetSearchProgress() {
+  state.currentItem = 0;
+  state.searching = false;
+}
+
 async function startRequest(text) {
   addMessage(text, "user");
+  resetSearchProgress();
   activity("Writing down your request", "Understanding"); setStep("understand");
   $("#planTitle").textContent = "Understanding request";
   try {
@@ -113,7 +124,8 @@ async function startRequest(text) {
 }
 
 async function continueRequest(text) {
-  addMessage(text, "user"); activity("Updating the plan with your answer", "Understanding"); setStep("understand");
+  addMessage(text, "user"); resetSearchProgress();
+  activity("Updating the plan with your answer", "Understanding"); setStep("understand");
   try {
     const session = await api(`/api/sessions/${state.sessionId}/messages`, { method: "POST", body: JSON.stringify({ message: text }) });
     renderPlan(session);
@@ -159,8 +171,13 @@ function renderOffers() {
 function renderNothingFound(card) {
   const outcomes = Object.values(state.session.offers_by_item || {});
   const outcome = outcomes[outcomes.length - 1] || {};
-  const explanation =
-    outcome.explanation || "I could not find that in the shops I can buy from.";
+  // No outcome at all means no search ran, which is a fault on our side rather
+  // than an empty catalogue. Saying "I could not find that" would blame the
+  // shops for a bug here.
+  const explanation = outcome.explanation
+    || (outcomes.length
+        ? "I could not find that in the shops I can buy from."
+        : "Something went wrong before I could search. Nothing was ordered — please try again.");
 
   const note = document.createElement("div");
   note.className = "question-card";

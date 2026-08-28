@@ -1206,3 +1206,66 @@ Prices come from search snippets and are whatever Google reports — including
 wholesale per-piece rates that look implausibly low next to retail packs. We
 show what the source says and do not second-guess it, because inventing a
 plausibility rule would be guesswork with the user's money.
+
+# F-023 — Only the first request ever searched anything
+ID: F-023
+Date: 2026-08-28
+Checkpoint: CP-3
+Command: make app -> ask for a laptop, then an iPhone, then an iPad
+
+## Expected behaviour
+Every request searches.
+
+## Actual behaviour
+The FIRST request worked. Every one after it returned
+    "I could not find that in the shops I can buy from."
+with no web results, for iphone, new phone and ipad — while the identical
+request through the API returned six web results each time. Found by the user,
+who noticed the first one worked and the rest did not.
+
+## Root cause
+One line of browser state.
+
+    const state = { ..., currentItem: 0, ... };
+
+`currentItem` tracks which item of the request is being searched, and it was
+initialised at PAGE LOAD and never again. After one single-item order it was
+left at 1. The next request has one item, so:
+
+    if (state.currentItem >= intent.items.length) { renderOffers(); return; }
+       1 >= 1  ->  render results without searching at all
+
+No request was made. The results panel was empty, so the UI fell through to its
+own default string — which blamed the shops for a bug in the client.
+
+The backend was correct the whole time. Every check I ran was through the API,
+where the bug cannot appear.
+
+## Proof
+    js> state.currentItem
+    1                      <- after one completed request
+
+## Fix
+resetSearchProgress() at the start of startRequest and continueRequest. The
+default message also now distinguishes "the shops had nothing" from "no search
+ran", because the second is our fault and must not be reported as the first.
+
+## Verified
+Laptop then iPhone in the same session, both returning live results with budget
+labels.
+
+## Lesson
+I verified this feature five times through TestClient and never once through the
+browser, so a whole class of bug — state that survives between requests — was
+invisible to every check I made. The user found it in under a minute by doing
+the obvious thing: asking for a second item.
+
+Testing the API is not testing the app.
+
+## Production relevance
+Silent skipped work is the worst failure shape: no error, no log, a plausible
+empty screen.
+
+## Remaining limitation
+Client state is still ad-hoc globals rather than something derived from the
+session. Another variable could rot the same way.
