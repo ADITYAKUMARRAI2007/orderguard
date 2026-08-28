@@ -23,4 +23,4 @@ app:
 # The whole product in one run, against real stores. Nothing stubbed.
 # No login, no payment; carts are anonymous and abandoned on exit.
 demo:
-	uv run python scripts/demo.py
+	@set -a && . ./.env && set +a && uv run python scripts/demo.py
