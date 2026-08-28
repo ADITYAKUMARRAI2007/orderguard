@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .cart_verifier import ApprovedCartLine, CartExpectation, compare_cart
 from .checkout_guard import CheckoutEvidence, ConfirmationResult, confirm_cart, evaluate_pre_payment_gates, ready_for_checkout
-from .commerce import Location, Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
+from .commerce import AdapterError, Location, Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
 from .commerce.discovery import DiscoveryRefused, discover
 from .commerce.stores import ALL as ALL_STORES, Store, for_query
 from .connectors import CONNECTORS, summary as connector_summary
@@ -424,11 +424,24 @@ async def select_offer(
     cart_id = session.observed_cart.cart_id if session.observed_cart else None
     adapter = ShopifyMCPAdapter(offer.store, offer.store_label)
     quantity = session.intent.items[item_index].quantity
-    async with adapter:
-        written = await adapter.add_to_cart(offer.variant_id, quantity, cart_id)
-        # Separate request: writes are never treated as evidence of what the
-        # merchant ultimately put in the cart.
-        observed = await adapter.read_cart(written.cart_id)
+    try:
+        async with adapter:
+            written = await adapter.add_to_cart(offer.variant_id, quantity, cart_id)
+            # Separate request: writes are never treated as evidence of what the
+            # merchant ultimately put in the cart.
+            observed = await adapter.read_cart(written.cart_id)
+    except AdapterError as exc:
+        # Fail closed, on purpose, with a message instead of a stack trace.
+        # Before this, a store going down mid-write reached FastAPI as an
+        # unhandled exception: no cart was touched, so nothing unsafe
+        # happened, but the user saw a raw 500 with no explanation instead of
+        # a plain refusal. "Fails closed" by accident is not the same claim as
+        # "fails closed, and says so" (F-028).
+        raise HTTPException(
+            status_code=502,
+            detail=f"{offer.store_label} did not respond while adding this to the "
+                   f"cart. Nothing was changed. {exc}",
+        ) from exc
 
     session.selected_by_item[item_index] = offer
     session.observed_cart = observed

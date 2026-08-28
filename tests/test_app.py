@@ -504,3 +504,63 @@ def test_an_item_no_shop_stocks_falls_back_to_the_web(memory_client, monkeypatch
     assert "cannot add them to a cart" in found["explanation"]
     assert [w["site_label"] for w in found["web"]] == ["Door Kisan"]
     assert found["web"][0]["claimed_price_paise"] == 8000
+
+
+def test_a_store_going_down_mid_write_is_a_clean_refusal_not_a_crash(
+    memory_client, monkeypatch
+):
+    """F-028: before this, the exception from a dead store reached FastAPI
+    unhandled — a raw 500 with a stack trace, no explanation, though nothing
+    unsafe happened because nothing in the session was touched yet.
+
+    Failing closed by accident is not the same claim as failing closed and
+    saying so. Razor Dvara's README makes exactly this point about a
+    serviceability backend dying mid-request, and this project did not yet
+    have a test for the equivalent case.
+    """
+    from orderguard.commerce import AdapterError
+
+    class _DeadAdapter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def add_to_cart(self, variant_id, quantity, cart_id=None):
+            raise AdapterError("farmley.com: HTTP 503")
+
+    stub = StubProvider(extra_answers={
+        "one pack of cashews, budget 900 rupees": {
+            "items": [{"requested_product": "cashews", "quantity": 1, "unit": "pack"}],
+            "maximum_total_paise": 90000,
+        }
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
+
+    async def search(*args, **kwargs):
+        return _outcome()
+
+    monkeypatch.setattr(app_module, "search_stores", search)
+    monkeypatch.setattr(app_module, "ShopifyMCPAdapter", _DeadAdapter)
+
+    session_id = memory_client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "one pack of cashews, budget 900 rupees",
+    }).json()["session_id"]
+    memory_client.post(f"/api/sessions/{session_id}/items/0/search")
+
+    response = memory_client.post(f"/api/sessions/{session_id}/items/0/select", json={
+        "offer_key": "freshcart|v1", "explicit_user_selection": True,
+    })
+
+    assert response.status_code == 502
+    assert "did not respond" in response.json()["detail"]
+    assert "Nothing was changed" in response.json()["detail"]
+
+    # and the session genuinely was not advanced by the failed attempt
+    session = memory_client.get(f"/api/sessions/{session_id}").json()
+    assert session["observed_cart"] is None
+    assert session["selected_by_item"] == {}

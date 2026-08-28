@@ -1508,3 +1508,52 @@ before trusting its own output, caught it in about ten seconds.
 ## Production relevance
 A benchmark that is wrong about its own instrumentation is worse than no
 benchmark, because it is more convincing.
+
+# F-028 — A dead store crashed the request instead of refusing it cleanly
+ID: F-028
+Date: 2026-08-28
+Checkpoint: post-payment review, reading competitor repos
+
+## Expected behaviour
+If a store goes down while writing a cart to it, the user gets a clear refusal
+and nothing in their session changes.
+
+## Actual behaviour
+add_to_cart/read_cart in select_offer were not wrapped. A store failure
+(StoreUnavailable, or any AdapterError) reached FastAPI as an unhandled
+exception: a raw 500 with a stack trace, no explanation of what happened or
+what to do next.
+
+## Root cause
+Never written, not broken later. search_stores already isolates a failing
+store per-store (F-016's neighbour concern), but the write path — the one
+call that actually changes something — had no equivalent guard.
+
+## Proof
+Found by reading Razor Dvara's README, which makes exactly this point about
+a serviceability backend dying mid-request and describes their own
+fail-closed degraded mode. Checking whether this project had the equivalent
+case covered: it did not, and there was no test for it either.
+
+## Fix
+Wrap the write in try/except AdapterError, return HTTP 502 with a plain
+sentence naming the store and stating nothing was changed.
+
+## Regression test
+tests/test_app.py::test_a_store_going_down_mid_write_is_a_clean_refusal_not_a_crash
+Also asserts session.observed_cart and selected_by_item are untouched after
+the failed attempt — the crash never reached the point of writing state, so
+this is confirming what was already true, not fixing a state-corruption bug.
+
+## Lesson
+The system was already safe here — nothing unsafe could have happened, because
+the exception fired before any session field was set. But "fails closed by
+accident, with a stack trace" is not the same claim as "fails closed, and says
+so", and a user cannot tell the two apart from the outside. Competitor reading
+found this, not our own test suite; the gap was in what we had NOT thought to
+test, not in a test that was wrong.
+
+## Production relevance
+A user shown a raw 500 has no way to know whether their money or their cart is
+in an unknown state. A named, worded refusal is doing real work even when the
+underlying system was already safe.
