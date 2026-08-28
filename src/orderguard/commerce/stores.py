@@ -25,10 +25,19 @@ __all__ = [
 
 
 class Store(NamedTuple):
+    """A shop, and the plain words describing what it sells.
+
+    ``sells`` must list things you can BUY there, never ingredients, scents or
+    marketing words. mCaffeine's products are named "Coffee Face Wash", but the
+    shop does not sell coffee — writing "coffee" there sent someone asking for a
+    cup of coffee to a skincare brand (F-025). If a word would not finish the
+    sentence "you can buy ___ here", it does not belong.
+    """
+
     domain: str
     label: str
     kind: str          # grocery | drinks | beauty | health | lifestyle
-    sells: str = ""    # plain words, used to route a query to likely shops
+    sells: str = ""
 
 
 GROCERY: tuple[Store, ...] = (
@@ -67,7 +76,10 @@ BEAUTY: tuple[Store, ...] = (
     Store("mamaearth.in", "Mamaearth", "beauty",
           "shampoo face wash cream baby skin hair"),
     Store("mcaffeine.com", "mCaffeine", "beauty",
-          "coffee scrub body wash face serum"),
+          # NOT "coffee". They sell skincare that smells of coffee, and listing
+          # the scent as a product routed "order 1 cup coffee" here and returned
+          # face wash ahead of actual coffee (F-025).
+          "scrub bodywash facewash serum lotion sunscreen"),
     Store("plumgoodness.com", "Plum", "beauty",
           "moisturiser serum face wash sunscreen"),
     Store("dotandkey.com", "Dot & Key", "beauty",

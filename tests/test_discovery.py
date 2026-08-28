@@ -349,3 +349,41 @@ def test_stores_that_cannot_take_a_cart_are_recorded_not_listed():
     for domain in ("minimalist.co", "arata.in", "setu.in"):
         assert domain not in domains
         assert "no cart" in KNOWN_BAD[domain]
+
+
+def test_a_shop_may_not_claim_a_category_it_only_smells_of():
+    """F-025: mCaffeine declared it sells "coffee".
+
+    It sells skincare that smells of coffee. That one word routed "order 1 cup
+    coffee" to a beauty brand and returned face wash, body scrub and under-eye
+    patches — no coffee at all.
+
+    "sells" must answer "you can buy ___ here". A scent is not a product.
+    """
+    from orderguard.commerce.stores import by_domain, for_query
+
+    assert "coffee" not in by_domain("mcaffeine.com").sells.split()
+
+    # asking for coffee reaches roasters only
+    assert {s.kind for s in for_query("order 1 cup coffee")} == {"drinks"}
+
+    # and mCaffeine is still found for what it genuinely sells
+    assert "mcaffeine.com" in [s.domain for s in for_query("coffee scrub")]
+
+
+def test_no_beauty_shop_claims_a_food_or_drink_category():
+    """The same mistake is easy to repeat with 'chocolate', 'milk', 'honey'.
+
+    A shop naming an ingredient it smells of, tastes of, or is made with will
+    hijack every search for the real thing.
+    """
+    from orderguard.commerce.stores import ALL
+
+    edible = {
+        "coffee", "tea", "milk", "chocolate", "honey", "rice", "dal",
+        "cereal", "oats", "quinoa", "beans",
+    }
+    for store in ALL:
+        if store.kind in {"beauty", "health", "lifestyle"}:
+            claimed = edible & set(store.sells.split())
+            assert not claimed, f"{store.domain} claims to sell {claimed}"

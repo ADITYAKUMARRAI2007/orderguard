@@ -1328,3 +1328,77 @@ useful to the sellers most worth buying from.
 ## Remaining limitation
 Store subject matter is hand-written. A new store needs its words filled in, and
 a test now fails if they are left blank.
+
+# F-025 — A shop that smells of coffee hijacked every search for coffee
+ID: F-025
+Date: 2026-08-28
+Checkpoint: CP-3
+Command: make app -> "order 1 cup coffee", budget Rs 200
+
+## Expected behaviour
+Coffee.
+
+## Actual behaviour
+    Coffee Face Wash - 100 ml                  mCaffeine
+    Coffee Body Scrub - 100 g                  mCaffeine
+    Coffee Hydrogel Under Eye Patches          mCaffeine
+    Caramel Eclairs Coffee Body Scrub          mCaffeine
+    Coffee Face Mask - 100 gm                  mCaffeine
+Five results, all skincare. Found by the user, one commit after I claimed the
+same class of bug was fixed.
+
+## Root cause
+Mine, in data I had written by hand an hour earlier. The store registry says
+what each shop sells, and I had written:
+
+    Store("mcaffeine.com", "mCaffeine", "beauty",
+          "coffee scrub body wash face serum")
+
+mCaffeine does not sell coffee. It sells skincare that smells of coffee. That
+one word did two things: it routed the query to a beauty brand, and it gave
+every mCaffeine product a shop-match score for "coffee".
+
+Worse, the F-024 fix made it stronger. Products whose titles say "Coffee Face
+Wash" scored on the title AND the shop, so the fix that was meant to rescue
+Blue Tokai's "Attikan Estate" also promoted skincare above it.
+
+## Proof
+    for_query("order 1 cup coffee") -> [Blue Tokai, Sleepy Owl, mCaffeine]
+    mCaffeine sells: "coffee scrub body wash face serum"
+
+## Fix
+`sells` must answer "you can buy ___ here". A scent, an ingredient or a
+marketing word does not qualify. mCaffeine now declares
+"scrub bodywash facewash serum lotion sunscreen".
+
+    'order 1 cup coffee' -> Sleepy Owl Instant Coffee Rs 599
+                            Blue Tokai Attikan Estate  Rs 700
+    'coffee scrub'       -> mCaffeine, correctly
+    'cold brew'          -> Blue Tokai and Sleepy Owl
+
+## Regression tests
+test_a_shop_may_not_claim_a_category_it_only_smells_of
+test_no_beauty_shop_claims_a_food_or_drink_category — sweeps every beauty,
+health and lifestyle shop for edible words, so the next store added cannot
+repeat it.
+
+## Lesson
+F-024 and F-025 are the same failure from opposite directions. In F-024 a shop
+that sold the thing was missed because its titles did not say so. In F-025 a
+shop that did not sell the thing won because its titles did.
+
+The first fix trusted my hand-written store descriptions, and I had put a lie in
+one of them. Adding a data-driven ranking signal means the data is now load
+bearing, and hand-written data is exactly where a plausible lie survives review:
+"coffee scrub body wash" reads perfectly true, because their products ARE called
+that.
+
+## Production relevance
+Ingredient-as-brand is everywhere in D2C — coffee scrubs, oat cleansers, milk
+soaps, chocolate protein. A catalogue router that cannot tell an ingredient from
+a product will send every food search into cosmetics.
+
+## Remaining limitation
+The guard test knows a fixed list of edible words. A shop selling "rose water"
+face mist would still hijack a search for rose water, and nothing here would
+notice.
