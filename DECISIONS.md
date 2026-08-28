@@ -657,3 +657,37 @@ Deliberately NOT done in this pass, and stated here rather than glossed over:
     NO_PRIOR_EFFECT) are not implemented — there is no merchant order to
     reconcile against yet for the same reason. PAYMENT_CAPTURED, AMOUNT_MATCH
     and CURRENCY_MATCH_POST are already fully covered by verify_payment itself.
+
+## D-031 — A fifty-journey adversarial benchmark, reusing the real guard
+Date: 2026-08-28
+Context: competitor research (checked, not taken on faith — repo existence and
+  headline numbers spot-verified against GitHub for the strongest entries)
+  showed the field's strongest submissions all report one number a judge can
+  read in ten seconds, not a qualitative safety story. OrderGuard had 25
+  logged failures and zero numbers.
+Decision: src/orderguard/benchmark.py runs 50 fixed purchase journeys through
+  the PRODUCTION code — cart_verifier.compare_cart,
+  checkout_guard.evaluate_pre_payment_gates, and ledger's idempotency
+  functions — never a parallel simulation that could quietly diverge from what
+  the app actually runs.
+Twelve categories: correct (15), wrong_quantity, price_changed, wrong_variant,
+  extra_item, missing_item, wrong_merchant, currency_mismatch, over_cap,
+  cart_changed_after_confirm, duplicate_checkout, model_insists_ok.
+Not D-010. D-010 is Track 04's reconciliation metric set — intent vs Razorpay
+  order/payment vs merchant order, measured after the fact. This is Track 01's
+  own claim about the pre-payment decision. Same discipline borrowed on
+  purpose: false-match rate reported separately, never folded into an overall
+  average that could hide it, because a system can reach a high match rate by
+  guessing dangerously.
+Result on this fixed set: 50/50 correct, 0% false-match rate, 0% false-block
+  rate, 0 duplicate business effects. Locked by tests/test_benchmark.py so the
+  claim cannot silently rot — if a future change weakens a gate, the suite
+  fails, not just the report.
+Found while building it, before it was trusted: the duplicate_checkout journey
+  originally reported a false match because the harness's own pass/fail rule
+  did not know that journey's "allowed" means "the ledger behaved safely"
+  rather than "a gate said proceed" — a bug in the BENCHMARK, not the guard,
+  caught by running it rather than by reading it.
+Downside: latency reported (p50 0.06ms, p95 5.1ms) is the deterministic
+  decision layer only, not network time to a merchant or Razorpay. Stated
+  explicitly in the report so it is not read as end-to-end latency.

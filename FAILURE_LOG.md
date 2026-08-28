@@ -1469,3 +1469,42 @@ understanding. "trail running shoes" would not match a title that only says
 "running shoe" (singular). The threshold trades recall for precision on
 purpose: a false positive here is worse than a false negative, because a false
 negative still falls through to the honest web fallback.
+
+# F-027 — The benchmark's own scoring rule produced a false match
+ID: F-027
+Date: 2026-08-28
+Checkpoint: benchmark build
+
+## Expected behaviour
+50/50 correct on the first run, since the underlying gates were already tested
+individually elsewhere.
+
+## Actual behaviour
+    false_match_rate = 0.057
+    WRONG: duplicate_checkout, captures=1, should_allow=False, allowed=True
+
+## Root cause
+`allowed` means two different things across this file and I only defined one
+of them. For every gate-based journey it is the gate's own verdict. For
+duplicate_checkout there is no gate call — it means "the ledger captured
+exactly once", which IS the safe outcome. The blanket rule
+`should_allow = kind is AttackKind.CORRECT` did not know that, so a perfectly
+safe idempotent replay was scored as an attack that got through.
+
+## Proof
+    captures=1, second attempt's payment id recorded=False
+(i.e. the ledger worked correctly — one capture, the replay was a no-op)
+
+## Fix
+should_allow is explicit for both meanings: True for CORRECT and for
+duplicate_checkout, False for every gate-based attack.
+
+## Lesson
+This is the same shape of bug as the product itself is built to catch: a
+single boolean asked to mean two different things depending on context, with
+nothing enforcing which meaning applied where. Running the benchmark once,
+before trusting its own output, caught it in about ten seconds.
+
+## Production relevance
+A benchmark that is wrong about its own instrumentation is worse than no
+benchmark, because it is more convincing.

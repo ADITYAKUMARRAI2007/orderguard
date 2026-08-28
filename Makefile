@@ -24,3 +24,8 @@ app:
 # No login, no payment; carts are anonymous and abandoned on exit.
 demo:
 	@set -a && . ./.env && set +a && uv run python scripts/demo.py
+
+# Fifty adversarial purchase journeys through the real guard. Writes
+# docs/BENCHMARK.md. Exits non-zero if the false-match rate is ever nonzero.
+benchmark:
+	uv run python scripts/benchmark.py
