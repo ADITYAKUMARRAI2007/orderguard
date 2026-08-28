@@ -1557,3 +1557,66 @@ test, not in a test that was wrong.
 A user shown a raw 500 has no way to know whether their money or their cart is
 in an unknown state. A named, worded refusal is doing real work even when the
 underlying system was already safe.
+
+# F-029 — A gate was passing for a reason that was never checked
+ID: F-029
+Date: 2026-08-28
+Checkpoint: building diagnostics.py
+
+## Expected behaviour
+G_MERCHANT_PERMITTED blocks a cart whose merchant differs from the one the
+user approved.
+
+## Actual behaviour
+It didn't check that at all. It checked
+`evidence.merchant_permitted` — a fact about whether the APPROVED merchant is
+on the allowed list, computed once from the intent, with no reference to what
+the observed cart actually says. A cart returned by a different (even
+allowlisted) merchant than the one approved would pass this gate outright.
+
+## Root cause
+The merchant swap was still being blocked in every existing test — but only
+as a side effect. `cart_hash()` includes the merchant name in what it hashes,
+so any merchant change also changes the hash, which trips
+G_CONFIRMATION_MATCHES. That backup was doing the real work silently.
+
+Checking every other attack category showed the pattern this broke:
+wrong_quantity, price_changed, wrong_variant and currency_mismatch each trip
+BOTH a specific named gate AND the hash catch-all — intentional defense in
+depth. Merchant was the only category with just the catch-all, dressed up as
+if it had a dedicated gate because one existed with a plausible name.
+
+## Proof
+Writing tests/test_diagnostics.py's wrong-merchant case:
+    diagnostics[str(GateName.MERCHANT_PERMITTED)]  ->  KeyError
+The gate had never been in `gates.failed` for that scenario at all —
+`G_CONFIRMATION_MATCHES` was doing the whole job alone.
+
+## Fix
+G_MERCHANT_PERMITTED now requires BOTH facts:
+`evidence.merchant_permitted and comparison.matches_merchant`. Verified via
+the benchmark: wrong_merchant journeys now show
+`(G_MERCHANT_PERMITTED, G_CONFIRMATION_MATCHES)` instead of
+`(G_CONFIRMATION_MATCHES,)` alone.
+
+## Regression test
+tests/test_diagnostics.py::test_a_wrong_merchant_names_both_shops
+benchmark.py's wrong_merchant category, re-verified after the fix.
+
+## Lesson
+The false-match rate never moved — this was never a hole an attacker could
+walk through, because the backup genuinely worked. But "caught by accident,
+via a field that happens to be included in a hash for an unrelated reason" is
+not the same claim as "caught on purpose, by a named check for exactly this."
+The difference only became visible when something tried to explain WHY a gate
+had fired, rather than just checking THAT one had.
+
+Same shape as F-028: a system that is already safe can still be worth fixing,
+because the gap is in what the system can PROVE about itself, not in what it
+actually does.
+
+## Production relevance
+A security control that exists only as an accidental side effect of an
+unrelated data structure is one refactor away from silently disappearing.
+Naming it turns a coincidence into an invariant someone has to deliberately
+break to remove.
