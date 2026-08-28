@@ -19,3 +19,8 @@ shop:
 # user calls its search endpoint; tests never touch the network.
 app:
 	uv run uvicorn orderguard.app:app --reload --port 8000 --env-file .env
+
+# The whole product in one run, against real stores. Nothing stubbed.
+# No login, no payment; carts are anonymous and abandoned on exit.
+demo:
+	uv run python scripts/demo.py

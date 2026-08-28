@@ -2,6 +2,21 @@ const state = { sessionId: null, session: null, currentItem: 0, searching: false
 const $ = (selector) => document.querySelector(selector);
 const conversation = $("#conversation");
 
+// A small, bounded pointer tilt gives the cards depth without making motion
+// part of the ordering logic. It is disabled on touch devices and for users
+// who request reduced motion.
+if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches && window.matchMedia("(pointer: fine)").matches) {
+  document.querySelectorAll(".plan-card, .safety-card").forEach((card) => {
+    card.addEventListener("pointermove", (event) => {
+      const box = card.getBoundingClientRect();
+      const x = (event.clientX - box.left) / box.width - 0.5;
+      const y = (event.clientY - box.top) / box.height - 0.5;
+      card.style.transform = `perspective(720px) rotateX(${(-y * 3).toFixed(2)}deg) rotateY(${(x * 4).toFixed(2)}deg) translateZ(12px)`;
+    });
+    card.addEventListener("pointerleave", () => { card.style.transform = ""; });
+  });
+}
+
 function money(paise, currency = "INR") {
   if (typeof paise !== "number") return "—";
   return new Intl.NumberFormat("en-IN", { style: "currency", currency }).format(paise / 100);
