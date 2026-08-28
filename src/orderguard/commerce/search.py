@@ -165,13 +165,28 @@ async def search_stores(
         shop_match = (
             len(wanted & _tokens(store.sells)) / len(wanted) if wanted else 0.0
         )
+        # A store we picked on purpose — it declared this category, or the user
+        # named it directly. Everything else in the twenty-four is a store we
+        # are asking on a hunch, because nothing declared the category and we
+        # fell back to everyone rather than find nothing.
+        dedicated = shop_match > 0 or store.kind == "added"
 
         for offer in result:
             found = _tokens(f"{offer.title} {offer.variant_title}")
             by_title = len(wanted & found) / len(wanted) if wanted else 1.0
-            # A title match is worth more than a shop match: the shop only tells
-            # you the aisle, the title tells you the product.
-            relevance = max(by_title, shop_match * 0.6)
+            if not wanted:
+                relevance = 1.0
+            elif dedicated:
+                # A title match is worth more than a shop match: the shop only
+                # tells you the aisle, the title tells you the product.
+                relevance = max(by_title, shop_match * 0.6)
+            else:
+                # Asked on a hunch, so a coincidental single-word hit does not
+                # count. "running shoes" matching a chukka shoe on "shoes", or
+                # "water bottle" matching rose water on "water", looked like a
+                # real find and was not (F-026). A guess this wide is trusted
+                # only when the WHOLE request appears in the title.
+                relevance = by_title if by_title >= 0.999 else 0.0
             line_total = offer.total_minor(quantity)
 
             outcome.offers.append(

@@ -1402,3 +1402,70 @@ a product will send every food search into cosmetics.
 The guard test knows a fixed list of edible words. A shop selling "rose water"
 face mist would still hijack a search for rose water, and nothing here would
 notice.
+
+# F-026 — A shoe shop's chukka boot outranked "no running shoes here"
+ID: F-026
+Date: 2026-08-28
+Checkpoint: CP-3
+
+## Expected behaviour
+"running shoes" and "water bottle" should return real matches or say plainly
+that these 24 D2C shops do not sell them.
+
+## Actual behaviour
+    'running shoes' -> TED CHUKKA SHOES, Rs 15,500, Nappa Dori (a bag brand)
+    'water bottle'  -> Rice Dewy Bright Face Wash With Rice Water, Mamaearth
+Both look like real results. Neither is what was asked for. Found by stress
+testing ten realistic conversational queries the user asked me to check.
+
+## Root cause
+No store declares "shoes" or "bottle" in what it sells, so for_query fell back
+to searching all twenty-four — a blind hunch, not a routed choice. The relevance
+floor from F-016 only required ONE shared word to survive. "shoes" alone matched
+a chukka boot; "water" alone matched rose water. A coincidental single-word hit
+across an unrelated 24-shop catalogue looked exactly like a genuine find.
+
+## Proof
+    for_query("running shoes") -> ALL (no store's `sells` overlaps "running"
+    or "shoes")
+    Nappa Dori title "TED CHUKKA SHOES" ∩ {"running","shoes"} = {"shoes"}
+    relevance = 0.5 under the old rule -> kept. Should not have been.
+
+## Fix
+Distinguish a ROUTED store (its declared `sells`, or a domain the user named
+directly, overlaps the request) from an UNTARGETED one (searched only because
+nothing declared the category, so we asked everyone rather than find nothing).
+Routed stores keep the existing lenient rule (any word match survives).
+Untargeted stores now require the WHOLE query to appear in the title.
+
+    'running shoes' -> nothing found, falls to the web
+    'water bottle'  -> nothing found, falls to the web
+    'backpack'      -> Amalia Laptop Backpack, Zouk        (kept, full match)
+    'sunglasses'    -> Mobster Sunglasses, Beardo          (kept, full match)
+    'protein powder'-> Wellcore Creatine, Wellversed       (unchanged, routed)
+    'coffee beans'  -> Attikan Estate, Blue Tokai          (unchanged, F-024)
+
+## Regression test
+tests/test_discovery.py: a lone-word hit on an untargeted shop is dropped; a
+full-title match on the same kind of shop is kept; a store the user named
+directly keeps the old lenient rule regardless.
+
+## Lesson
+F-016 fixed showing wrong products by requiring ANY overlap. F-024 rescued a
+genuine match that had NO title overlap by trusting the shop instead. Neither
+fix asked whether the shop was even a reasonable place to look. The missing
+signal was not in the product at all — it was in why the store got asked in
+the first place.
+
+## Production relevance
+A false positive is worse than an honest "not found": it spends the user's
+attention on the wrong thing and, in a system built to catch wrong items in a
+cart, is the same shape of error the whole product exists to prevent — just one
+step earlier, in search rather than in the cart.
+
+## Remaining limitation
+"Full title match" is still a word-set comparison, not real product
+understanding. "trail running shoes" would not match a title that only says
+"running shoe" (singular). The threshold trades recall for precision on
+purpose: a false positive here is worse than a false negative, because a false
+negative still falls through to the honest web fallback.

@@ -387,3 +387,96 @@ def test_no_beauty_shop_claims_a_food_or_drink_category():
         if store.kind in {"beauty", "health", "lifestyle"}:
             claimed = edible & set(store.sells.split())
             assert not claimed, f"{store.domain} claims to sell {claimed}"
+
+
+# --- coincidental matches on an untargeted guess -----------------------------
+
+@pytest.mark.asyncio
+async def test_a_lone_word_hit_on_an_untargeted_shop_is_not_a_match():
+    """F-026: "running shoes" returned a chukka shoe. "water bottle" returned
+    rose water. Neither shop sells the thing asked for or declares the
+    category — every store was searched on a blind hunch (no store's `sells`
+    overlaps the query), and a single shared word looked like a find.
+
+    A guess this wide is only trusted when the whole request is in the title.
+    """
+    import httpx
+
+    from orderguard.commerce.base import Offer
+    from orderguard.commerce.search import search_stores
+    from orderguard.commerce.stores import Store
+
+    hunch_store = Store("shoes.example", "Shoes Example", "lifestyle", "leather bag wallet")
+
+    async def fake_search(self, query, limit=10, location=None):
+        return [Offer(
+            store="shoes.example", store_label="Shoes Example", product_id="p1",
+            variant_id="v1", title="TED CHUKKA SHOES", price_minor=1550000,
+            currency="INR", available=True,
+        )]
+
+    import orderguard.commerce.shopify_mcp as mcp
+    orig = mcp.ShopifyMCPAdapter.search
+    mcp.ShopifyMCPAdapter.search = fake_search
+    try:
+        out = await search_stores("running shoes", quantity=1, stores=(hunch_store,))
+    finally:
+        mcp.ShopifyMCPAdapter.search = orig
+
+    assert out.offers == []
+    assert out.nothing_matched
+
+
+@pytest.mark.asyncio
+async def test_a_full_title_match_on_an_untargeted_shop_is_still_trusted():
+    """The same hunch store, asked for exactly what its product is called."""
+    from orderguard.commerce.base import Offer
+    from orderguard.commerce.search import search_stores
+    from orderguard.commerce.stores import Store
+
+    hunch_store = Store("gear.example", "Gear Example", "lifestyle", "leather bag wallet")
+
+    async def fake_search(self, query, limit=10, location=None):
+        return [Offer(
+            store="gear.example", store_label="Gear Example", product_id="p1",
+            variant_id="v1", title="Amalia Laptop Backpack", price_minor=159900,
+            currency="INR", available=True,
+        )]
+
+    import orderguard.commerce.shopify_mcp as mcp
+    orig = mcp.ShopifyMCPAdapter.search
+    mcp.ShopifyMCPAdapter.search = fake_search
+    try:
+        out = await search_stores("backpack", quantity=1, stores=(hunch_store,))
+    finally:
+        mcp.ShopifyMCPAdapter.search = orig
+
+    assert len(out.offers) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_store_the_user_named_directly_keeps_the_lenient_threshold():
+    """An "added" store is one the user pointed us at by name. Trust their
+    judgment about the shop even when the match is partial."""
+    from orderguard.commerce.base import Offer
+    from orderguard.commerce.search import search_stores
+    from orderguard.commerce.stores import Store
+
+    added_store = Store("named.example", "Named Example", "added", "")
+
+    async def fake_search(self, query, limit=10, location=None):
+        return [Offer(
+            store="named.example", store_label="Named Example", product_id="p1",
+            variant_id="v1", title="Trail Running Shoe (Men)", price_minor=299900,
+            currency="INR", available=True,
+        )]
+
+    import orderguard.commerce.shopify_mcp as mcp
+    orig = mcp.ShopifyMCPAdapter.search
+    mcp.ShopifyMCPAdapter.search = fake_search
+    try:
+        out = await search_stores("running shoes", quantity=1, stores=(added_store,))
+    finally:
+        mcp.ShopifyMCPAdapter.search = orig
+
+    assert len(out.offers) == 1
