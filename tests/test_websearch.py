@@ -220,3 +220,37 @@ def test_the_spelling_table_only_ever_changes_a_name():
     assert sum("for domain, label in _SHOP_SPELLINGS" in u for u in uses) == 1
     assert not any("not in _SHOP_SPELLINGS" in u for u in uses)
     assert not any("if host in _SHOP_SPELLINGS" in u for u in uses)
+
+
+@pytest.mark.asyncio
+async def test_the_merchant_named_by_the_search_engine_wins_over_the_link():
+    """F-018: with a real key, every result came back labelled "Google".
+
+    Serper's shopping entries carry the merchant in `source` while `link` points
+    at google.com. Reading the shop from the link gave "Google" for all of them,
+    which looked exactly like the hardcoded-site problem it was not.
+    """
+    outcome = await search_web("cashews", provider=StubSearchProvider([
+        {"title": "Happilo Premium Cashews", "link": "https://www.google.com/search?q=x",
+         "snippet": "₹329", "source": "Amazon.in"},
+        {"title": "Nutri Binge Roasted Salted Cashew 200g",
+         "link": "https://www.google.com/search?q=y",
+         "snippet": "₹299", "source": "Fitfire Consumer"},
+    ]))
+
+    assert [r.site_label for r in outcome.results] == ["Amazon", "Fitfire Consumer"]
+    assert "google" not in " ".join(r.site for r in outcome.results)
+
+
+@pytest.mark.asyncio
+async def test_the_same_product_from_two_endpoints_is_shown_once():
+    """Shopping and organic overlap. The shopping entry wins: it has the price."""
+    outcome = await search_web("cashews", provider=StubSearchProvider([
+        {"title": "Happilo Premium Cashews Roasted", "link": "https://google.com/x",
+         "snippet": "₹329", "source": "Amazon.in"},
+        {"title": "Happilo Premium Cashews Roasted!", "link": "https://amazon.in/dp/x",
+         "snippet": "Buy online", "source": ""},
+    ]))
+
+    assert len(outcome.results) == 1
+    assert outcome.results[0].claimed_price_paise == 32900

@@ -903,3 +903,65 @@ loop that could not succeed.
 ## Production relevance
 "Nothing was ordered" is the sentence a user needs when a purchase flow errors.
 Ours was withholding it.
+
+# F-018 — Every shop on the internet was called "Google"
+ID: F-018
+Date: 2026-08-28
+Checkpoint: CP-3 (web search)
+Command: SEARCH_PROVIDER=serper, then search_web("roasted cashews 200g")
+
+## Expected behaviour
+Results labelled with the shop selling the product.
+
+## Actual behaviour
+Eighteen results across three queries, every single one labelled "Google".
+Real prices, real products, and no idea where any of them came from.
+
+## Root cause
+serper's /shopping entries look like this:
+
+    {"title": "Happilo Premium Cashews Roasted and Salted",
+     "source": "Amazon.in",
+     "link": "https://www.google.com/search?ibp=oshop&...",
+     "price": "₹329"}
+
+The merchant is in `source`. `link` is a Google Shopping URL. I derived the shop
+from the link, so every result resolved to google.com.
+
+I had only ever tested this against results I constructed by hand from a
+WebSearch summary, where links were merchant URLs. The provider's actual
+response shape was never checked. Same mistake as F-004 and F-013: I trusted
+what a response ought to look like instead of printing one.
+
+## Proof
+    top-level keys: ['searchParameters', 'shopping', 'credits']
+    first item source: "Amazon.in"   link: "https://www.google.com/search?..."
+
+## Fix
+`source` is now preferred over the link, because it is the only field that is
+not a guess. SerperProvider also queries /search alongside /shopping and merges:
+shopping supplies the structured price and the merchant name, organic supplies
+links that go to the shop rather than to Google. Duplicates are collapsed by
+title, keeping the shopping entry because it carries the price.
+
+Now: Fitfire Consumer, Amazon, JioMart Grocery, Zepto, Cape Fresh, kindlife.in,
+Pureheart, Reliance Digital, Gadgets Now, FirstCry India, Myntra, Nalanda
+Enterprises.
+
+## Regression test
+tests/test_websearch.py::test_the_merchant_named_by_the_search_engine_wins_over_the_link
+
+## Lesson
+The user's complaint was "you hardcoded the sites". The code was not restricted
+at all — but the OUTPUT looked identical to a hardcoded list, because everything
+said "Google". A correct implementation that presents wrongly is indistinguishable
+from a wrong one, and arguing about the code would not have fixed it. Running it
+did.
+
+## Production relevance
+Price comparison without the merchant name is not price comparison.
+
+## Remaining limitation
+Shopping links still point at Google Shopping rather than the merchant's own
+page. Organic results supply real merchant links, but they are not always the
+same product as the priced shopping entry.

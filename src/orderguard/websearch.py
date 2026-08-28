@@ -25,6 +25,7 @@ carries on with the stores it can shop.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from typing import Protocol
@@ -90,12 +91,19 @@ def price_from_text(text: str) -> int | None:
     return paise
 
 
-def _site_of(url: str, title: str = "") -> tuple[str, str]:
+def _site_of(url: str, title: str = "", source: str = "") -> tuple[str, str]:
     """Work out which shop a result is from, for any site on the web.
 
-    Order of preference: a spelling we know, then the shop's own name as the
-    search engine printed it in the title, then the domain.
+    Order of preference: the merchant the search engine named, then a spelling
+    we know, then the shop's own name from the title, then the domain.
+
+    ``source`` comes first because it is the only one that is not a guess. It
+    also fixes the case where the link belongs to Google rather than the shop.
     """
+    if source.strip():
+        host = source.strip().lower().removeprefix("www.")
+        return host, _SHOP_SPELLINGS.get(host, source.strip())
+
     host = re.sub(r"^https?://", "", url or "").split("/")[0].lower()
     host = host.removeprefix("www.")
     if not host:
@@ -133,6 +141,7 @@ class WebResult(BaseModel):
     site: str
     site_label: str = ""
     snippet: str = ""
+    image: str = ""
     claimed_price_paise: int | None = None
 
     @property
@@ -178,33 +187,68 @@ class NoSearchProvider:
 
 
 class SerperProvider:
-    """serper.dev — Google results, free tier, no card."""
+    """serper.dev — Google results, free tier, no card.
+
+    Asks two endpoints, because neither alone is enough.
+
+    ``/shopping`` gives a structured price and, crucially, a ``source`` field
+    naming the real merchant — "Amazon.in", "Nutribinge". Its ``link`` is a
+    google.com URL, so reading the shop from the link gives you "Google" for
+    every single result (F-018).
+
+    ``/search`` gives ordinary web results whose links ARE the merchant's own
+    site, but with the price buried in prose.
+
+    Both, merged, gives a real shop name, a real price, and a link that goes
+    to the shop.
+    """
 
     name = "serper"
 
     def __init__(self, api_key: str) -> None:
         self._key = api_key
 
+    async def _post(self, client: httpx.AsyncClient, path: str, query: str, limit: int):
+        response = await client.post(
+            f"https://google.serper.dev/{path}",
+            headers={"X-API-KEY": self._key, "Content-Type": "application/json"},
+            json={"q": query, "gl": "in", "hl": "en", "num": limit},
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def search(self, query: str, limit: int) -> list[dict]:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(
-                "https://google.serper.dev/shopping",
-                headers={"X-API-KEY": self._key, "Content-Type": "application/json"},
-                json={"q": query, "gl": "in", "hl": "en", "num": limit},
+            shopping, organic = await asyncio.gather(
+                self._post(client, "shopping", query, limit),
+                self._post(client, "search", query, limit),
+                return_exceptions=True,
             )
-            response.raise_for_status()
-            body = response.json()
 
-        # The shopping endpoint gives structured prices; organic is the fallback.
-        items = body.get("shopping") or body.get("organic") or []
-        return [
-            {
-                "title": str(item.get("title") or ""),
-                "link": str(item.get("link") or ""),
-                "snippet": str(item.get("snippet") or item.get("price") or ""),
-            }
-            for item in items[:limit]
-        ]
+        results: list[dict] = []
+
+        if isinstance(shopping, dict):
+            for item in (shopping.get("shopping") or [])[:limit]:
+                results.append({
+                    "title": str(item.get("title") or ""),
+                    "link": str(item.get("link") or ""),
+                    "snippet": str(item.get("price") or ""),
+                    # the merchant, straight from Google rather than guessed
+                    "source": str(item.get("source") or ""),
+                    "image": str(item.get("imageUrl") or ""),
+                })
+
+        if isinstance(organic, dict):
+            for item in (organic.get("organic") or [])[:limit]:
+                results.append({
+                    "title": str(item.get("title") or ""),
+                    "link": str(item.get("link") or ""),
+                    "snippet": str(item.get("snippet") or ""),
+                    "source": "",
+                    "image": "",
+                })
+
+        return results
 
 
 class BraveProvider:
@@ -300,7 +344,7 @@ async def search_web(
         if not url.startswith("http"):
             continue
         title = str(item.get("title") or "").strip()
-        site, label = _site_of(url, title)
+        site, label = _site_of(url, title, str(item.get("source") or ""))
         snippet = str(item.get("snippet") or "").strip()
         if not title:
             continue
@@ -315,8 +359,20 @@ async def search_web(
                 # just more room for text aimed at a model. It reaches no gate
                 # either way.
                 snippet=snippet[:300],
+                image=str(item.get("image") or "")[:500],
                 claimed_price_paise=price_from_text(f"{title} {snippet}"),
             )
         )
 
-    return WebSearchOutcome(query=query, provider=provider.name, results=results)
+    # Shopping and organic often return the same product. Keep the first, which
+    # is the shopping entry, because it carries the structured price.
+    seen: set[str] = set()
+    unique: list[WebResult] = []
+    for result in results:
+        key = re.sub(r"[^a-z0-9]", "", result.title.lower())[:60]
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(result)
+
+    return WebSearchOutcome(query=query, provider=provider.name, results=unique[:limit])
