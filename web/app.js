@@ -149,8 +149,54 @@ function renderOffers() {
       row.append(info, price, choose); wrap.append(row);
     });
   });
-  if (!wrap.children.length) { const empty = document.createElement("div"); empty.className = "question-card"; empty.textContent = "No usable options were returned. I have not changed a cart."; card.append(empty); return; }
+  if (!wrap.children.length) { renderNothingFound(card); return; }
   card.append(wrap); addMessage("I found these options. I won’t choose between different products for you — choose the one you want, and I’ll verify the cart afterward.");
+}
+
+// No shop we can buy from stocks this. Say which shops were tried, then show
+// what the web found so the user can open it themselves. A blank panel reading
+// "No usable options" is not an answer (F-021).
+function renderNothingFound(card) {
+  const outcomes = Object.values(state.session.offers_by_item || {});
+  const outcome = outcomes[outcomes.length - 1] || {};
+  const explanation =
+    outcome.explanation || "I could not find that in the shops I can buy from.";
+
+  const note = document.createElement("div");
+  note.className = "question-card";
+  note.textContent = explanation;
+  card.append(note);
+  addMessage(explanation);
+
+  const web = outcome.web || [];
+  if (!web.length) return;
+
+  const list = document.createElement("div");
+  list.className = "offer-list";
+  web.slice(0, 6).forEach((result) => {
+    const row = document.createElement("div");
+    row.className = "offer";
+    if (result.image) { const img = document.createElement("img"); img.src = result.image; img.alt = ""; row.append(img); }
+
+    const info = document.createElement("div"); info.className = "offer-info";
+    const title = document.createElement("div"); title.className = "offer-title";
+    title.textContent = result.title;
+    const meta = document.createElement("div"); meta.className = "offer-meta";
+    meta.textContent = `${result.site_label || result.site} · opens in a new tab`;
+    info.append(title, meta);
+
+    const price = document.createElement("div"); price.className = "offer-price";
+    price.textContent = result.claimed_price_paise === null || result.claimed_price_paise === undefined
+      ? "—" : money(result.claimed_price_paise);
+
+    // A link, never a Choose button. Nothing here can enter a cart.
+    const open = document.createElement("a");
+    open.className = "choose"; open.textContent = "Open";
+    open.href = result.url; open.target = "_blank"; open.rel = "noopener noreferrer";
+
+    row.append(info, price, open); list.append(row);
+  });
+  card.append(list);
 }
 
 async function selectOffer(itemIndex, offer, row) {

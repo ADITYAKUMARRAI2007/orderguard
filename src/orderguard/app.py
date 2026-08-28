@@ -42,7 +42,7 @@ from .memory import (
     suggest_reorder,
 )
 from .models import ObservedCart, PurchaseIntent
-from .websearch import WebSearchOutcome, search_web
+from .websearch import WebResult, WebSearchOutcome, search_web
 
 app = FastAPI(title="OrderGuard", version="0.1.0")
 
@@ -84,6 +84,24 @@ class SelectOfferRequest(BaseModel):
 
     offer_key: str = Field(min_length=1)
     explicit_user_selection: Literal[True]
+
+
+class ItemSearch(SearchOutcome):
+    """Store offers, plus the web when no shop we can buy from stocks the item.
+
+    The five shops OrderGuard can transact with are speciality D2C brands —
+    millet food, coffee, ghee. Ask them for onions or momos and they correctly
+    return nothing, which left the user staring at "No usable options" with no
+    way forward (F-021).
+
+    So when the shops come back empty, we look on the open web and hand back
+    links. Those are still not purchasable here — same rule as everywhere else —
+    but "none of my shops sell this, here is where the web says to get it" is an
+    answer, and a blank panel is not.
+    """
+
+    web: list[WebResult] = Field(default_factory=list)
+    explanation: str = ""
 
 
 class ShoppingSession(BaseModel):
@@ -268,8 +286,8 @@ async def continue_session(
     return session
 
 
-@app.post("/api/sessions/{session_id}/items/{item_index}/search", response_model=SearchOutcome)
-async def search_item(session_id: str, item_index: int) -> SearchOutcome:
+@app.post("/api/sessions/{session_id}/items/{item_index}/search", response_model=ItemSearch)
+async def search_item(session_id: str, item_index: int) -> ItemSearch:
     session = _session(session_id)
     if session.intent is None:
         raise HTTPException(status_code=409, detail="answer the clarification before searching")
@@ -318,7 +336,32 @@ async def search_item(session_id: str, item_index: int) -> SearchOutcome:
     session.offers_by_item[item_index] = {
         _offer_key(scored.offer): scored.offer for scored in outcome.offers
     }
-    return outcome
+
+    result = ItemSearch(**outcome.model_dump())
+    if outcome.offers:
+        return result
+
+    shops = ", ".join(outcome.stores_searched) or "the stores I can reach"
+    found = await search_web(item.requested_product)
+    result.web = found.results
+
+    if result.web:
+        result.explanation = (
+            f"None of the shops I can buy from sell {item.requested_product}. "
+            f"I searched {shops}. Here is what the web shows — you can open "
+            f"these yourself; I cannot add them to a cart."
+        )
+    elif outcome.suggestions:
+        result.explanation = (
+            f"I could not find {item.requested_product} at {shops}. "
+            f"They do sell: {', '.join(outcome.suggestions[:3])}."
+        )
+    else:
+        result.explanation = (
+            f"I searched {shops} and found no {item.requested_product}. "
+            f"{found.unavailable_reason}".strip()
+        )
+    return result
 
 
 @app.post("/api/sessions/{session_id}/items/{item_index}/select", response_model=ShoppingSession)

@@ -1057,3 +1057,77 @@ end; "no exact match, these shops sell these things" is a question.
 ## Remaining limitation
 Matching is still lexical. "Healthy breakfast" and "millet porridge" are related
 only in a person's head, and nothing here knows that.
+
+# F-021 — "No usable options" for anything a normal person would buy
+ID: F-021
+Date: 2026-08-28
+Checkpoint: CP-3
+Command: make app -> "Order 2 momos under 500", "find 1 kg onion"
+
+## Expected behaviour
+Something useful for an ordinary shopping request.
+
+## Actual behaviour
+A blank panel: "No usable options were returned. I have not changed a cart."
+Repeatedly, for momos, onions, eggs, chicken. Found by the user, who asked the
+right question: "it several times just give no results but how".
+
+## Root cause
+Not a bug in any function. A mismatch between what the app OFFERS and what it
+can REACH.
+
+The five shops we can transact with are speciality D2C brands:
+    Slurrp Farm    kids' millet food
+    Nourish You    quinoa and superfoods
+    Two Brothers   organic ghee and atta
+    Blue Tokai     coffee
+    Sleepy Owl     coffee
+
+    'momos'   -> 0 results
+    'onion'   -> 0 results
+    'eggs'    -> 0 results
+    'chicken' -> 0 results
+
+None of them sell any of it, and they never will. But the app opens with "Tell
+me what you need", which promises a supermarket. Every ordinary request was
+always going to fail, and the failure said nothing about why.
+
+Every previous fix in this area made the message better while leaving the
+mismatch untouched. F-016 stopped showing wrong products; F-020 offered
+substitutes from the same five shops. Neither could help someone who wants an
+onion.
+
+## Fix
+When no shop we can buy from stocks the item, the search now falls back to the
+open web and returns links, together with a sentence naming the shops it tried.
+
+    "None of the shops I can buy from sell momos. I searched Slurrp Farm,
+     Nourish You, Two Brothers, Blue Tokai, Sleepy Owl. Here is what the web
+     shows — you can open these yourself; I cannot add them to a cart."
+
+        BigBasket            Rs 278.60   Wow! Momo Veg Premium Momos
+        Zepto                Rs 200.00   Prasuma Mixed Vegetable Momos
+        Blinkit              Rs 160.00   Hello Tempayy High Protein Veg Momos
+        Meatigo by Prasuma   Rs 250.00   Prasuma Chicken Momos
+
+Web rows get an "Open" link, never a "Choose" button. Nothing there can enter a
+cart, which is the same rule as everywhere else.
+
+## Regression test
+tests/test_app.py::test_an_item_no_shop_stocks_falls_back_to_the_web
+
+## Lesson
+I fixed the wording of this failure three times without asking why the failure
+kept happening. F-016, F-020 and this are the same complaint from the user, and
+only this one looked past the message to the catalogue behind it.
+
+The honest framing is also the better product: naming the five shops tells the
+user exactly what kind of thing this can buy, which no amount of polish on "no
+results" ever would.
+
+## Production relevance
+An assistant that cannot say why it failed cannot be trusted when it succeeds.
+
+## Remaining limitation
+Web results are links. We still cannot buy an onion, and the app now says so
+plainly instead of implying otherwise with an empty panel.

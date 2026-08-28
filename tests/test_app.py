@@ -457,3 +457,49 @@ def test_no_search_key_leaves_store_shopping_untouched(memory_client, monkeypatc
 
     stores = memory_client.post(f"/api/sessions/{session_id}/items/0/search")
     assert stores.status_code == 200          # unaffected
+
+
+def test_an_item_no_shop_stocks_falls_back_to_the_web(memory_client, monkeypatch):
+    """F-021: momos, onions and eggs returned a blank panel every time.
+
+    The five shops we can buy from are speciality D2C brands. They will never
+    stock an onion. Saying which shops were tried, and where the web says to get
+    it, is an answer; an empty panel is not.
+    """
+    from orderguard.commerce.search import SearchOutcome
+    from orderguard.websearch import StubSearchProvider, search_web as real_search
+
+    stub = StubProvider(extra_answers={
+        "one kg onion, budget 100 rupees": {
+            "items": [{"requested_product": "onion", "quantity": 1, "unit": "kg"}],
+            "maximum_total_paise": 10000,
+        }
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
+
+    async def nothing(*args, **kwargs):
+        return SearchOutcome(
+            query="onion", quantity=1,
+            stores_searched=["Slurrp Farm", "Blue Tokai"],
+        )
+
+    async def web(query, **kwargs):
+        return await real_search(query, provider=StubSearchProvider([
+            {"title": "Onion 1 kg", "link": "https://doorkisan.example/p",
+             "snippet": "₹80", "source": "Door Kisan"},
+        ]))
+
+    monkeypatch.setattr(app_module, "search_stores", nothing)
+    monkeypatch.setattr(app_module, "search_web", web)
+
+    session_id = memory_client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "one kg onion, budget 100 rupees",
+    }).json()["session_id"]
+
+    found = memory_client.post(f"/api/sessions/{session_id}/items/0/search").json()
+
+    assert found["offers"] == []
+    assert "Slurrp Farm" in found["explanation"]      # names what it tried
+    assert "cannot add them to a cart" in found["explanation"]
+    assert [w["site_label"] for w in found["web"]] == ["Door Kisan"]
+    assert found["web"][0]["claimed_price_paise"] == 8000
