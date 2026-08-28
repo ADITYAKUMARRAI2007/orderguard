@@ -14,7 +14,7 @@ Not Track 04's D-010 metric set — that reconciles intent, Razorpay order and m
 | False-block rate (correct cart wrongly blocked) | 0% |
 | Duplicate business effects | 0 |
 | Gate evaluation latency, p50 | 0.059 ms |
-| Gate evaluation latency, p95 | 5.119 ms |
+| Gate evaluation latency, p95 | 0.221 ms |
 
 Latency here is the deterministic decision layer only — comparing a typed cart against a typed intent and running twelve gates. It excludes the network calls to a merchant or to Razorpay, which this benchmark does not make; those are measured live in `make demo`.
 
@@ -36,3 +36,19 @@ Latency here is the deterministic decision layer only — comparing a typed cart
 | model_insists_ok | 2 | 2 | 100% |
 
 **Zero false matches.** No corrupted cart in this run was allowed through.
+
+## Graduated fault injection
+
+The fixed fifty above proves each attack is caught at least once. This asks a harder question: does that hold as corruption becomes MORE common, not merely present? The corruption rate is randomised per journey and seeded, so this table is exactly reproducible.
+
+| Corruption rate | Journeys | False-match rate | False-block rate |
+|---:|---:|---:|---:|
+| 0% | 25 | **0%** | 0% |
+| 5% | 25 | **0%** | 0% |
+| 10% | 25 | **0%** | 0% |
+| 20% | 25 | **0%** | 0% |
+| 40% | 25 | **0%** | 0% |
+| 80% | 25 | **0%** | 0% |
+| 100% | 25 | **0%** | 0% |
+
+Worst false-match rate across every corruption level tested: **0%**.

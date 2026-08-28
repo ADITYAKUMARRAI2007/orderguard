@@ -85,3 +85,62 @@ def test_the_markdown_report_states_the_headline_numbers():
     assert "False-match rate" in text
     assert "0%" in text
     assert "Zero false matches" in text
+
+
+# --- graduated fault injection ------------------------------------------
+
+def test_the_false_match_rate_stays_zero_at_every_corruption_level():
+    """The harder question the fixed fifty cannot answer: does detection hold
+    as corruption becomes MORE common, not merely present in the set at all."""
+    from orderguard.benchmark import run_injection_curve
+
+    points = run_injection_curve()
+    assert len(points) == 7
+    for point in points:
+        assert point.false_match_rate == 0.0, f"rate={point.rate}: {point.false_match_rate}"
+
+
+def test_the_curve_is_exactly_reproducible():
+    from orderguard.benchmark import run_injection_curve
+
+    a = run_injection_curve()
+    b = run_injection_curve()
+    assert [p.false_match_rate for p in a] == [p.false_match_rate for p in b]
+    assert [len(p.corrupted) for p in a] == [len(p.corrupted) for p in b]
+
+
+def test_zero_percent_corruption_is_all_correct_carts():
+    from orderguard.benchmark import run_injection_curve
+
+    points = run_injection_curve(rates=(0.0,), n_per_rate=20)
+    assert len(points[0].corrupted) == 0
+    assert len(points[0].clean) == 20
+
+
+def test_one_hundred_percent_corruption_is_all_attacks_and_all_caught():
+    from orderguard.benchmark import run_injection_curve
+
+    points = run_injection_curve(rates=(1.0,), n_per_rate=20)
+    point = points[0]
+    assert len(point.clean) == 0
+    assert len(point.corrupted) == 20
+    assert all(not j.allowed for j in point.corrupted)
+
+
+def test_a_different_seed_gives_a_different_draw_same_zero_result():
+    """Not the same journeys — a genuinely different random draw — but the
+    property being tested (zero false matches) must not depend on which
+    draw came up."""
+    from orderguard.benchmark import run_injection_curve
+
+    a = run_injection_curve(rates=(0.5,), n_per_rate=30, seed=1)
+    b = run_injection_curve(rates=(0.5,), n_per_rate=30, seed=2)
+    assert [j.kind for j in a[0].journeys] != [j.kind for j in b[0].journeys]
+    assert a[0].false_match_rate == b[0].false_match_rate == 0.0
+
+
+def test_the_injection_markdown_states_the_worst_case_plainly():
+    from orderguard.benchmark import render_injection_markdown, run_injection_curve
+
+    text = render_injection_markdown(run_injection_curve())
+    assert "Worst false-match rate across every corruption level tested: **0%**" in text

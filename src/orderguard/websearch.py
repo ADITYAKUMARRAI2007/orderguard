@@ -395,9 +395,6 @@ async def search_web(
                 url=url,
                 site=site,
                 site_label=label,
-                # Truncated because it is shown, and because a long snippet is
-                # just more room for text aimed at a model. It reaches no gate
-                # either way.
                 snippet=snippet[:300],
                 image=str(item.get("image") or "")[:500],
                 claimed_price_paise=price_from_text(f"{title} {snippet}"),
