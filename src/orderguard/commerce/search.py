@@ -84,10 +84,16 @@ class SearchOutcome(BaseModel):
     offers: list[ScoredOffer] = Field(default_factory=list)
     stores_searched: list[str] = Field(default_factory=list)
     stores_failed: dict[str, str] = Field(default_factory=dict)
+    irrelevant_dropped: int = 0
 
     @property
     def any_results(self) -> bool:
         return bool(self.offers)
+
+    @property
+    def nothing_matched(self) -> bool:
+        """Stores answered, and none of them sell this."""
+        return not self.offers and self.irrelevant_dropped > 0
 
     @property
     def needs_a_choice(self) -> bool:
@@ -158,7 +164,15 @@ async def search_stores(
                 )
             )
 
-    outcome.offers = rank(outcome.offers)
+    # Drop products with nothing to do with what was asked, as long as
+    # something relevant survives. Asking for pizza used to return a mozzarella
+    # block from an organic farm store: the search "worked", every price was
+    # real, and the answer was nonsense (F-016). Saying "none of these shops
+    # sell that" is a better answer than a confident list of the wrong things.
+    relevant = [offer for offer in outcome.offers if offer.relevance > 0]
+    outcome.irrelevant_dropped = len(outcome.offers) - len(relevant)
+    outcome.offers = rank(relevant)
+
     return outcome
 
 

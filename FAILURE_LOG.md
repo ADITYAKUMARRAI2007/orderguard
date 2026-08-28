@@ -731,3 +731,175 @@ Location is still passed through as buyer context because stores that DO honour
 it will give better results. It changed nothing on the store we tested, so no
 claim is made that it improves relevance — and nothing in a safety check depends
 on it.
+
+# F-014 — Answering the question asked the question again
+ID: F-014
+Date: 2026-08-28
+Checkpoint: CP-3
+Command: make app, then "Find me a healthy breakfast on Zepto under Rs 400"
+
+## Expected behaviour
+"How many would you like?" answered with "2" should record a quantity of 2.
+
+## Actual behaviour
+The same question came back. Answering again asked BOTH questions at once:
+  "How many healthy breakfast would you like? What is the most you would like
+   to spend, including delivery?"
+The user could not get out of the loop. Found by the user, in the running app.
+
+## Root cause
+continue_session appended the raw reply and recompiled the whole text:
+    "...under Rs 400\nUser clarification: 2"
+A lone "2" beside a request that already contains "400" is ambiguous, so the
+model did not bind it to quantity, and _missing_fields asked again.
+
+We knew which field we had asked about and threw that knowledge away.
+
+## Proof
+compile_intent on "...under Rs 400\nUser clarification: 2" -> still asks quantity
+compile_intent on "...under Rs 400\nQuantity for item 1: 2" -> quantity 2, cap 40000
+
+## Fix
+The session keeps pending_fields. label_answer(field, answer) attaches the reply
+to the question it answers, and parses the digits itself.
+
+## Regression test
+tests/test_intent_compiler.py::test_a_bare_answer_is_bound_to_the_question_it_answers
+
+## Lesson
+Code decided WHICH question to ask, then handed the answer back to the model as
+unlabelled text and hoped. If deterministic code is good enough to choose the
+question it is good enough to read the answer.
+
+## Production relevance
+High. A clarification loop with no exit is worse than no clarification.
+
+## Remaining limitation
+Free-text answers ("a couple") still go to the model. Only digits are parsed here.
+
+
+# F-015 — It offered cheese for a pizza order, from a shop it cannot use
+ID: F-015
+Date: 2026-08-28
+Checkpoint: CP-3
+Command: make app, then "Order 2 pizza from La Pinoz"
+
+## Expected behaviour
+La Pinoz has no agent surface. Say so immediately.
+
+## Actual behaviour
+  1. asked for a budget
+  2. searched five grocery stores
+  3. offered a mozzarella block from Two Brothers at Rs 530
+  4. only at SELECTION did it notice the shop was wrong
+Same for "healthy breakfast on Zepto" and "chicken momos from Swiggy".
+Every step worked. The result was nonsense. Found by the user.
+
+## Root cause
+Two mistakes.
+  1. The named shop was never checked for reachability. The only merchant check
+     was at selection time, comparing an offer's store to the intent — far too
+     late to be useful.
+  2. CompilationResult dropped the draft merchant when the request was
+     incomplete, so even after adding the check it could not run until every
+     other question had been answered. We asked a budget for a shop we were
+     never going to be able to use.
+
+## Proof
+"Order 2 pizza from La Pinoz" -> "What is the most you would like to spend?"
+then 24 grocery offers, none of them pizza.
+
+## Fix
+src/orderguard/merchants.py resolves a named shop BEFORE searching, into
+SHOPPABLE / BLOCKED / NOT_REACHABLE / UNKNOWN, each with a reason in the user's
+words. CompilationResult now carries draft_merchant so the check runs on an
+incomplete request. Search is refused outright for a blocked shop.
+
+## Regression test
+tests/test_merchants.py, nine cases including La Pinoz, Swiggy, Zomato, Zepto
+
+## Lesson
+The interesting failure was not a crash. Every component did its job and the
+product was still wrong, because nobody asked "can we even shop here?" first.
+Component tests cannot catch that; only running the thing can.
+
+Also: refusing early IS the feature. "I cannot shop La Pinoz, here is why, here
+is what I can do" is a better answer than a confident list of the wrong products.
+
+## Production relevance
+Direct. An agent that silently substitutes a shop the user did not ask for is
+the exact behaviour this project exists to prevent, and ours was doing it.
+
+## Remaining limitation
+A shop named as a plain word with no website cannot be checked beyond our known
+list. We say so rather than guessing.
+
+
+# F-016 — Asking for pizza returned mozzarella
+ID: F-016
+Date: 2026-08-28
+Checkpoint: CP-3
+
+## Expected behaviour
+If no store sells what was asked for, say so.
+
+## Actual behaviour
+"pizza" returned three products, top of them a mozzarella block. Relevance was
+computed and scored 0.0, then displayed anyway because rank() only sorted.
+
+## Root cause
+Relevance was used for ordering and never as a floor. A list sorted worst-last
+is still a list of wrong answers when everything in it is wrong.
+
+## Fix
+Offers with relevance 0 are dropped when anything relevant survives. Search
+reports irrelevant_dropped and nothing_matched.
+  "pizza"         -> 0 shown, 3 dropped, nothing_matched=True
+  "millet cereal" -> 5 shown, 19 dropped
+Note the second line: even a good search was showing 24 results of which 19 were
+unrelated.
+
+## Regression test
+tests/test_discovery.py::test_products_unrelated_to_the_request_are_dropped
+
+## Lesson
+Ranking is not filtering. Sorting the wrong answers to the bottom still presents
+them as answers.
+
+## Production relevance
+An agent that offers cheese for pizza will eventually have one bought.
+
+
+# F-017 — An outage was reported as the user's mistake
+ID: F-017
+Date: 2026-08-28
+Checkpoint: CP-3
+
+## Expected behaviour
+When the language provider is unreachable, say so.
+
+## Actual behaviour
+  "I could not safely understand that order. What would you like to buy?"
+shown for a perfectly clear request, because the provider had returned an error.
+The user retyped it, which failed the same way.
+
+## Root cause
+compile_intent caught LLMUnavailable in the same except clause as
+ValidationError, so a service outage and a genuinely unparseable request
+produced identical text.
+
+## Fix
+Separate handlers. An outage now says the service could not be reached, states
+that nothing was ordered, and asks the user to try again shortly.
+
+## Regression test
+tests/test_intent_compiler.py::test_a_provider_outage_does_not_blame_the_user
+
+## Lesson
+Failing safely and failing honestly are different requirements. Both refusals
+were safe; one of them lied about whose fault it was, and sent the user round a
+loop that could not succeed.
+
+## Production relevance
+"Nothing was ordered" is the sentence a user needs when a purchase flow errors.
+Ours was withholding it.

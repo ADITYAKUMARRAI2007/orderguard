@@ -245,3 +245,38 @@ async def test_the_store_is_never_asked_to_enforce_a_budget():
     catalog = sent["params"]["arguments"]["catalog"]
     assert catalog["context"]["postal_code"] == "560001"
     assert "filters" not in catalog, "a price filter the store ignores must not be sent"
+
+
+# --- irrelevant results -----------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_products_unrelated_to_the_request_are_dropped():
+    """F-016: asking for pizza returned a mozzarella block from a farm store.
+
+    The search worked, every price was real, and the answer was nonsense. An
+    empty result saying so beats a confident list of the wrong things.
+    """
+    from orderguard.commerce.base import Offer
+    from orderguard.commerce.search import ScoredOffer, SearchOutcome
+
+    def _scored(title, relevance):
+        return ScoredOffer(
+            offer=Offer(store="s.example", store_label="S", product_id="p",
+                        variant_id="v" + title[:2], title=title, price_minor=100,
+                        currency="INR", available=True),
+            relevance=relevance, in_stock=True, priced=True, line_total_minor=100,
+        )
+
+    outcome = SearchOutcome(query="pizza", quantity=1)
+    outcome.offers = [_scored("Mozzarella cheese block", 0.0)]
+    outcome.irrelevant_dropped = 1
+    outcome.offers = []
+    assert outcome.nothing_matched
+
+
+@pytest.mark.asyncio
+async def test_nothing_matched_is_false_when_the_stores_simply_had_nothing():
+    from orderguard.commerce.search import SearchOutcome
+
+    quiet = SearchOutcome(query="pizza", quantity=1)
+    assert not quiet.nothing_matched          # nothing came back at all

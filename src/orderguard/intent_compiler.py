@@ -6,6 +6,8 @@ or whether the request is complete. Those are derived in deterministic code.
 
 from __future__ import annotations
 
+import re
+
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -48,6 +50,11 @@ class CompilationResult(BaseModel):
     intent: PurchaseIntent | None = None
     clarifications: list[Clarification] = Field(default_factory=list)
     model_error: str = ""
+    # The shop the user named, even when the request is still incomplete.
+    # Without this the app could not check reachability until every other
+    # question had been answered — so it asked a budget for a shop it was never
+    # going to be able to use (F-015).
+    draft_merchant: str = ""
 
 
 def compile_intent(
@@ -68,7 +75,24 @@ def compile_intent(
             schema=_DraftIntent.model_json_schema(),
         )
         draft = _DraftIntent.model_validate(raw)
-    except (LLMUnavailable, ValidationError, ValueError) as exc:
+    except LLMUnavailable as exc:
+        # The service failed. Saying "I could not understand you" would blame
+        # the user for our outage and invite them to rephrase a request that was
+        # perfectly clear (F-017).
+        return CompilationResult(
+            clarifications=[
+                Clarification(
+                    reason=ClarificationReason.LOW_CONFIDENCE,
+                    question=(
+                        "I could not reach the service that reads your request, "
+                        "so I have not done anything. Nothing was ordered. "
+                        "Please try again in a moment."
+                    ),
+                )
+            ],
+            model_error=f"LLMUnavailable: {exc}",
+        )
+    except (ValidationError, ValueError) as exc:
         return CompilationResult(
             clarifications=[
                 Clarification(
@@ -81,7 +105,9 @@ def compile_intent(
 
     clarifications = _missing_fields(draft)
     if clarifications:
-        return CompilationResult(clarifications=clarifications)
+        return CompilationResult(
+            clarifications=clarifications, draft_merchant=draft.merchant or ""
+        )
 
     return CompilationResult(
         intent=PurchaseIntent(
@@ -101,8 +127,43 @@ def compile_intent(
             maximum_total_paise=draft.maximum_total_paise or 0,
             currency=draft.currency.upper(),
             status=IntentStatus.READY_FOR_SEARCH,
-        )
+        ),
+        draft_merchant=draft.merchant or "",
     )
+
+
+def label_answer(field: str, answer: str) -> str:
+    """Attach a bare answer to the field it was asked about.
+
+    The app used to append the raw reply — so "how many?" answered with "2"
+    became a line reading just ``2``, which is ambiguous next to a request that
+    already contains "under 400". The model kept asking the same question and
+    the user was stuck in a loop (F-014).
+
+    A number is also parsed here rather than left to the model. Code asked the
+    question, so code should be able to read the answer.
+    """
+    text = (answer or "").strip()
+    digits = re.sub(r"[^\d]", "", text)
+
+    if field.endswith(".quantity"):
+        index = re.search(r"\[(\d+)\]", field)
+        which = f" for item {int(index.group(1)) + 1}" if index else ""
+        if digits:
+            return f"Quantity{which}: {int(digits)}"
+        return f"Quantity{which}: {text}"
+
+    if field == "maximum_total_paise":
+        if digits:
+            return f"Total budget including delivery: {int(digits)} rupees"
+        return f"Total budget including delivery: {text}"
+
+    if field == "merchant":
+        return f"Shop to buy from: {text}"
+    if field == "items":
+        return f"Product wanted: {text}"
+
+    return f"Additional detail: {text}"
 
 
 def _missing_fields(draft: _DraftIntent) -> list[Clarification]:

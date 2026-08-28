@@ -22,9 +22,10 @@ from .commerce import GROCERY, Location, Offer, SearchOutcome, ShopifyMCPAdapter
 from .commerce.discovery import DiscoveryRefused, discover
 from .commerce.stores import ALL as ALL_STORES, Store
 from .connectors import CONNECTORS, summary as connector_summary
-from .intent_compiler import CompilationResult, compile_intent
+from .intent_compiler import CompilationResult, compile_intent, label_answer
 from .llm import provider_from_env
 from .mcp_server import router as mcp_router
+from .merchants import Reach, resolve_merchant
 from .memory import (
     apply_preferences_to_gaps,
     chat_history,
@@ -103,6 +104,13 @@ class ShoppingSession(BaseModel):
     # user, because memory applied silently is memory they cannot correct.
     memory_notes: list[str] = Field(default_factory=list)
     location: Location | None = None
+    # The fields we last asked about, so a bare answer like "2" can be bound to
+    # the question it answers instead of being re-parsed out of a text blob.
+    pending_fields: list[str] = Field(default_factory=list)
+    named_merchant: str = ""
+    # Set when the user named a shop we cannot use. Searching anyway would
+    # answer a question they did not ask.
+    blocked_merchant: str = ""
 
 
 _SESSIONS: dict[str, ShoppingSession] = {}
@@ -150,7 +158,7 @@ def _expectation(session: ShoppingSession) -> CartExpectation:
 
 
 @app.post("/api/sessions", response_model=ShoppingSession)
-def create_session(request: CreateSessionRequest) -> ShoppingSession:
+async def create_session(request: CreateSessionRequest) -> ShoppingSession:
     session_id = str(uuid4())
     remember_chat_turn(
         MEMORY, session_id=session_id, user_id=request.user_id,
@@ -184,15 +192,46 @@ def create_session(request: CreateSessionRequest) -> ShoppingSession:
         request_text=request.request_text,
         intent=result.intent,
         clarifications=[question.question for question in result.clarifications],
+        pending_fields=[question.field for question in result.clarifications],
+        named_merchant=result.draft_merchant,
         memory_notes=notes,
         location=location,
     )
+    await _check_named_shop(session)
     _SESSIONS[session_id] = session
     return session
 
 
+async def _check_named_shop(session: ShoppingSession) -> None:
+    """If the user named a shop, find out now whether we can use it.
+
+    Before this existed, "order 2 pizza from La Pinoz" asked for a budget,
+    searched five grocery stores and offered a mozzarella block. Every step
+    worked; the answer was nonsense. See F-015.
+    """
+    named = session.named_merchant or (
+        session.intent.merchant if session.intent else ""
+    )
+    if not named:
+        return
+
+    verdict = await resolve_merchant(
+        named,
+        extra_domains=tuple(
+            (s.domain, s.label) for s in saved_stores(MEMORY, session.user_id)
+        ),
+    )
+    if verdict.can_shop:
+        session.memory_notes.append(verdict.message)
+        return
+
+    session.blocked_merchant = verdict.named
+    session.clarifications = [verdict.message]
+    session.pending_fields = ["merchant"]
+
+
 @app.post("/api/sessions/{session_id}/messages", response_model=ShoppingSession)
-def continue_session(
+async def continue_session(
     session_id: str, request: ContinueSessionRequest
 ) -> ShoppingSession:
     """Add an answer to the same conversation and recompile its request.
@@ -205,7 +244,11 @@ def continue_session(
         MEMORY, session_id=session_id, user_id=session.user_id,
         role="user", text=request.message,
     )
-    session.request_text = f"{session.request_text}\nUser clarification: {request.message}"
+    # Bind the reply to the question it answers. A bare "2" appended to a
+    # request that already says "under 400" is ambiguous, and the model kept
+    # re-asking the same question (F-014).
+    field = session.pending_fields[0] if session.pending_fields else ""
+    session.request_text = f"{session.request_text}\n{label_answer(field, request.message)}"
     result = compile_intent(
         provider_from_env(),
         user_request=session.request_text,
@@ -214,10 +257,14 @@ def continue_session(
     )
     session.intent = result.intent
     session.clarifications = [question.question for question in result.clarifications]
+    session.pending_fields = [question.field for question in result.clarifications]
+    session.named_merchant = result.draft_merchant
+    session.blocked_merchant = ""
     session.offers_by_item.clear()
     session.selected_by_item.clear()
     session.observed_cart = None
     session.confirmation = None
+    await _check_named_shop(session)
     return session
 
 
@@ -226,6 +273,12 @@ async def search_item(session_id: str, item_index: int) -> SearchOutcome:
     session = _session(session_id)
     if session.intent is None:
         raise HTTPException(status_code=409, detail="answer the clarification before searching")
+    if session.blocked_merchant:
+        raise HTTPException(
+            status_code=409,
+            detail=session.clarifications[0] if session.clarifications
+            else f"I cannot shop {session.blocked_merchant}.",
+        )
     if not 0 <= item_index < len(session.intent.items):
         raise HTTPException(status_code=404, detail="unknown requested item")
 
