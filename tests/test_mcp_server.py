@@ -114,7 +114,7 @@ def test_an_empty_order_is_refused():
 def test_a_correct_cart_passes_every_check(intent_id):
     result = call("check_cart", _cart(intent_id))
     assert result["allow"] is True
-    assert result["checks_passed"] == result["checks_total"] == 12
+    assert result["checks_passed"] == result["checks_total"] == 13
     assert result["instruction"] == "Proceed to payment."
 
 

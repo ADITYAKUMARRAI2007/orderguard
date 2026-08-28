@@ -95,18 +95,26 @@ class ClarificationReason(StrEnum):
 
 
 class GateName(StrEnum):
-    """The 21 safety checks. Frozen at CP-0 — see docs/GATES.md.
+    """The 22 safety checks. Frozen at CP-0 — see docs/GATES.md.
 
     All must pass before money moves. Every one is plain code over typed values,
     so no text and no AI answer can move them.
 
     PRICES_MATCH was added after CP-0, when building the real Shopify adapter
     showed the original eleven could not catch a merchant quoting one price and
-    charging another beneath the cap. Recorded as D-024. The list is frozen so
-    that a count is never invented, not so that a hole stays open.
+    charging another beneath the cap. Recorded as D-024.
+
+    AUTHORIZATION_FRESH was added after that, answering a specific question:
+    what stops a confirmed cart from being paid an hour, a day, or a week
+    later, on prices and stock that may no longer be true? A confirmation is
+    proof the user approved THIS cart at THIS moment — not a standing
+    permission. Recorded as D-035.
+
+    The list is frozen so that a count is never invented, not so that a hole
+    stays open.
     """
 
-    # --- before payment: the twelve mandate gates ---
+    # --- before payment: the thirteen mandate gates ---
     MERCHANT_PERMITTED = "G_MERCHANT_PERMITTED"
     INTENT_VALID = "G_INTENT_VALID"
     FIELDS_COMPLETE = "G_FIELDS_COMPLETE"
@@ -118,6 +126,7 @@ class GateName(StrEnum):
     CURRENCY_MATCH = "G_CURRENCY_MATCH"
     WITHIN_CAP = "G_WITHIN_CAP"                  # ₹640 under a ₹500 cap fails here
     CONFIRMATION_MATCHES = "G_CONFIRMATION_MATCHES"
+    AUTHORIZATION_FRESH = "G_AUTHORIZATION_FRESH"  # confirmed 40 minutes ago: fails here
     IDEMPOTENCY_FREE = "G_IDEMPOTENCY_FREE"
 
     # --- after payment: the nine integrity gates ---
@@ -137,7 +146,8 @@ PRE_PAYMENT_GATES: tuple[GateName, ...] = (
     GateName.CART_UNIQUE, GateName.ATTRIBUTES_MATCH, GateName.QUANTITIES_MATCH,
     GateName.PRICES_MATCH,
     GateName.ITEMS_AVAILABLE, GateName.CURRENCY_MATCH, GateName.WITHIN_CAP,
-    GateName.CONFIRMATION_MATCHES, GateName.IDEMPOTENCY_FREE,
+    GateName.CONFIRMATION_MATCHES, GateName.AUTHORIZATION_FRESH,
+    GateName.IDEMPOTENCY_FREE,
 )
 
 POST_PAYMENT_GATES: tuple[GateName, ...] = (

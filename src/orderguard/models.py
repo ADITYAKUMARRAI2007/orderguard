@@ -79,6 +79,13 @@ class PurchaseIntent(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     status: IntentStatus = IntentStatus.DRAFT
     confirmed_cart_hash: str | None = None
+    # Set alongside confirmed_cart_hash, never independently. This is what
+    # G_AUTHORIZATION_FRESH checks: a confirmation is proof the user approved
+    # THIS cart at THIS moment, not a standing permission. Left unbounded, a
+    # confirmed hash would authorise a checkout an hour, a day, or a week
+    # later — a classic time-of-check/time-of-use gap between "the user looked
+    # at this cart" and "money moved". See D-035.
+    confirmed_at: datetime | None = None
 
     @property
     def is_complete(self) -> bool:

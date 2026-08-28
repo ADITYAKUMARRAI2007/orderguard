@@ -21,14 +21,14 @@ from orderguard.models import (
 
 # --- the fixed lists --------------------------------------------------------
 
-def test_all_twentyone_gates_exist():
-    """docs/GATES.md promises 21 gates. Prove the code has 21.
+def test_all_twentytwo_gates_exist():
+    """docs/GATES.md promises 22 gates. Prove the code has 22.
 
-    Twelve before payment since D-024 added PRICES_MATCH; nine after.
+    Thirteen before payment since D-035 added AUTHORIZATION_FRESH; nine after.
     """
-    assert len(PRE_PAYMENT_GATES) == 12
+    assert len(PRE_PAYMENT_GATES) == 13
     assert len(POST_PAYMENT_GATES) == 9
-    assert len(set(PRE_PAYMENT_GATES) | set(POST_PAYMENT_GATES)) == 21
+    assert len(set(PRE_PAYMENT_GATES) | set(POST_PAYMENT_GATES)) == 22
 
 
 def test_gate_lists_do_not_overlap():

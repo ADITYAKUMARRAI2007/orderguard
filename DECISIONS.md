@@ -764,3 +764,72 @@ Test: tests/test_benchmark.py, six cases including exact reproducibility and
   that a different seed changes the draw but not the zero result.
 Applied to cart integrity, not chargeback evidence, and against this
   project's own production gate code rather than a parallel simulation of it.
+
+## D-035 — G_AUTHORIZATION_FRESH: a confirmation is not a standing permission
+Date: 2026-08-28
+Context: competitor review raised the standard time-of-check/time-of-use
+  question directly: what stops the cart changing between verification and
+  checkout? D-004 already freezes confirmed_cart_hash so ANY change to the
+  cart is caught by G_CONFIRMATION_MATCHES. What was missing is a bound on
+  TIME — a confirmed hash that never expires authorises a checkout an hour, a
+  day, or a week later, on prices and stock that may no longer be true, even
+  though the cart itself never visibly "changed".
+Decision: PurchaseIntent gains confirmed_at, set once alongside
+  confirmed_cart_hash and never independently. evaluate_pre_payment_gates
+  gains G_AUTHORIZATION_FRESH: now - confirmed_at <= 15 minutes by default
+  (DEFAULT_AUTHORIZATION_TTL in checkout_guard.py), overridable per call for
+  testing the boundary deterministically. Pre-payment set: twelve to
+  thirteen. Total: twenty-one to twenty-two.
+15 minutes chosen to sit near the order of magnitude of Razorpay's own
+  Checkout order window, so the two expiries fail at a similar horizon rather
+  than one silently outliving the other.
+Test: tests/test_checkout_guard.py — fresh at 1 second, stale at 1 hour,
+  window is configurable but never optional, an intent that was never
+  confirmed has nothing to be fresh.
+
+## D-036 — G_MERCHANT_PERMITTED was checking the wrong cart
+Date: 2026-08-28
+Context: found while building diagnostics.py (D-037). Writing a test asserting
+  a wrong-merchant cart is diagnosed under G_MERCHANT_PERMITTED failed with a
+  KeyError — the gate had never actually fired. Traced why: it only checked
+  `evidence.merchant_permitted`, which is "is the APPROVED merchant on the
+  allowed list" — a fact about the intent, computed once, independent of what
+  the observed cart says. It never checked whether the CART IN FRONT OF US
+  was actually that merchant.
+  A merchant swap was still being caught, but only as a side effect: cart_hash
+  includes merchant, so G_CONFIRMATION_MATCHES fires too. Checking every other
+  attack category confirmed the pattern this broke: wrong_quantity, price_changed,
+  wrong_variant and currency_mismatch each trip BOTH a specific gate AND the
+  hash catch-all, as defense in depth. Merchant was the one category relying
+  on the catch-all alone.
+Decision: G_MERCHANT_PERMITTED now requires both
+  `evidence.merchant_permitted AND comparison.matches_merchant` — the approved
+  merchant is on the list, and the cart's own merchant is the one approved.
+  Confirmed via the benchmark: wrong_merchant journeys now fail
+  [G_MERCHANT_PERMITTED, G_CONFIRMATION_MATCHES] instead of
+  [G_CONFIRMATION_MATCHES] alone. False-match rate unchanged at 0% — this was
+  a missing FIRST line of defense, not a hole an attacker could walk through,
+  because the backup was catching it. Recorded as F-029 regardless, because a
+  defense relying entirely on a side effect is not the same claim as an
+  intentional, named check.
+
+## D-037 — diagnostics.py: a gate failure becomes a diff, not just a sentence
+Date: 2026-08-28
+Context: GateResult.reasons gives one English sentence per failed gate.
+  Competitor review specifically named this as a demo weakness: a judge asking
+  "what exactly did the agent get wrong?" deserves an answer shaped like
+  expected-vs-actual, the way Razor Dvara's reason_code/rule_id pairing does.
+Decision: diagnose(intent, expectation, observed, gates) reads the SAME
+  CartComparison and PurchaseIntent the gates already computed, and renders
+  the parts with a natural expected/actual pairing (quantities, prices,
+  merchant, currency, cap, confirmation hash, authorization age) as structured
+  JSON-safe values. Runs strictly downstream of the real GateResult — it
+  describes gates.failed, never recomputes whether something failed, and a
+  gate whose failure is a bare fact rather than a comparison (allowlist
+  membership, stock availability, idempotency) is left undiagnosed rather than
+  given an invented placeholder.
+Building this is what surfaced D-036: the first version of a wrong-merchant
+  test could not find a diagnosis under G_MERCHANT_PERMITTED because that gate
+  had never actually been firing for that reason.
+Test: tests/test_diagnostics.py, ten cases including one asserting diagnose()
+  adds nothing when handed a fabricated GateResult it did not itself produce.

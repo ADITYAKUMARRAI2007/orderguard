@@ -32,6 +32,7 @@ Speaks MCP over HTTP JSON-RPC: ``initialize``, ``tools/list``, ``tools/call``.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -295,6 +296,11 @@ def _check_cart(arguments: dict) -> dict:
         update={
             "status": IntentStatus.CONFIRMED,
             "confirmed_cart_hash": comparison.cart_hash,
+            # This tool checks and pays in the same breath, so the
+            # confirmation is fresh by construction — there is no window for
+            # G_AUTHORIZATION_FRESH to catch here, unlike the multi-step
+            # session flow in app.py where confirm and pay are separate calls.
+            "confirmed_at": datetime.now(timezone.utc),
         }
     )
 

@@ -77,11 +77,11 @@ def test_changed_cart_invalidates_a_previous_confirmation():
     assert "G_CONFIRMATION_MATCHES" in gates.reasons
 
 
-def test_all_twelve_pre_payment_gates_can_pass_with_typed_evidence():
+def test_all_thirteen_pre_payment_gates_can_pass_with_typed_evidence():
     intent = confirm_cart(ready_for_checkout(_intent_with_item()), _expectation(), _cart()).intent
     gates = evaluate_pre_payment_gates(intent, _expectation(), _cart(), _evidence())
     assert gates.allow
-    assert len(gates.passed) == 12
+    assert len(gates.passed) == 13
     assert not gates.failed
 
 
@@ -125,3 +125,62 @@ def test_a_price_rise_under_the_cap_blocks_checkout():
     )
     assert not gates.allow
     assert GateName.PRICES_MATCH in gates.failed
+
+
+# --- authorization freshness: TOCTOU ----------------------------------------
+
+def test_a_confirmation_from_a_moment_ago_is_fresh():
+    from datetime import datetime, timedelta, timezone
+
+    confirmed = confirm_cart(ready_for_checkout(_intent_with_item()), _expectation(), _cart())
+    assert confirmed.confirmed
+
+    now = confirmed.intent.confirmed_at + timedelta(seconds=1)
+    gates = evaluate_pre_payment_gates(
+        confirmed.intent, _expectation(), _cart(), _evidence(), now=now,
+    )
+    assert GateName.AUTHORIZATION_FRESH in gates.passed
+
+
+def test_a_confirmation_from_an_hour_ago_is_stale():
+    """The exact TOCTOU gap: nothing about the cart changed, only how long ago
+    it was looked at. A confirmation is proof of THIS moment, not a standing
+    permission."""
+    from datetime import timedelta
+
+    confirmed = confirm_cart(ready_for_checkout(_intent_with_item()), _expectation(), _cart())
+    assert confirmed.confirmed
+
+    an_hour_later = confirmed.intent.confirmed_at + timedelta(hours=1)
+    gates = evaluate_pre_payment_gates(
+        confirmed.intent, _expectation(), _cart(), _evidence(), now=an_hour_later,
+    )
+    assert not gates.allow
+    assert GateName.AUTHORIZATION_FRESH in gates.failed
+    # nothing else about the cart is wrong — this is the ONLY failure
+    assert gates.failed == [GateName.AUTHORIZATION_FRESH]
+
+
+def test_the_freshness_window_is_configurable_but_never_optional():
+    from datetime import timedelta
+
+    confirmed = confirm_cart(ready_for_checkout(_intent_with_item()), _expectation(), _cart())
+    thirty_min_later = confirmed.intent.confirmed_at + timedelta(minutes=30)
+
+    # default 15-minute window: stale
+    default = evaluate_pre_payment_gates(
+        confirmed.intent, _expectation(), _cart(), _evidence(), now=thirty_min_later,
+    )
+    assert GateName.AUTHORIZATION_FRESH in default.failed
+
+    # an explicitly wider window: fresh
+    widened = evaluate_pre_payment_gates(
+        confirmed.intent, _expectation(), _cart(), _evidence(),
+        now=thirty_min_later, max_authorization_age=timedelta(hours=1),
+    )
+    assert GateName.AUTHORIZATION_FRESH in widened.passed
+
+
+def test_an_intent_that_was_never_confirmed_has_no_authorization_to_be_fresh():
+    gates = evaluate_pre_payment_gates(_intent_with_item(), _expectation(), _cart(), _evidence())
+    assert GateName.AUTHORIZATION_FRESH in gates.failed

@@ -151,7 +151,7 @@ def test_creating_a_payment_order_runs_the_gates_and_calls_razorpay_once(client)
     assert order["status"] == "pending"
     assert order["razorpay_order_id"] == FAKE_ORDER_ID
     assert order["amount_paise"] == 13200
-    assert order["gates_passed"] == order["gates_total"] == 12
+    assert order["gates_passed"] == order["gates_total"] == 13
     assert _FakeRazorpayClient.create_calls == 1
 
 

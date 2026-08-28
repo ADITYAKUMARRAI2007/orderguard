@@ -25,7 +25,7 @@ tracked, because F-011 in this project's own failure log is a gate that fired
 on a correct cart — a false block is not automatically a safe failure. A
 product that blocks everything has a false-match rate of zero and is useless.
 
-Twelve attack categories, chosen to be the ones the guard exists to catch,
+Thirteen attack categories, chosen to be the ones the guard exists to catch,
 not the ones easiest to pass:
 
     correct                        should ALLOW
@@ -38,6 +38,7 @@ not the ones easiest to pass:
     currency_mismatch              INR approved, cart charges in a different one
     over_cap                       correct items, total exceeds the stated limit
     cart_changed_after_confirm     the cart moved after the hash was frozen (D-004)
+    stale_authorization            confirmed too long ago — TOCTOU (D-035)
     duplicate_checkout             the SAME confirmed purchase, paid for twice
     model_insists_ok               a model's own claim of correctness, attached
                                     and ignored — there is no parameter for it
@@ -48,6 +49,7 @@ from __future__ import annotations
 import random
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 
 from .cart_verifier import ApprovedCartLine, CartExpectation, compare_cart
@@ -80,6 +82,7 @@ class AttackKind(StrEnum):
     CURRENCY_MISMATCH = "currency_mismatch"
     OVER_CAP = "over_cap"
     CART_CHANGED_AFTER_CONFIRM = "cart_changed_after_confirm"
+    STALE_AUTHORIZATION = "stale_authorization"
     DUPLICATE_CHECKOUT = "duplicate_checkout"
     MODEL_INSISTS_OK = "model_insists_ok"
 
@@ -88,7 +91,7 @@ class AttackKind(StrEnum):
 # because a benchmark that is mostly attacks would not prove the guard lets
 # real purchases through — that is the other half of being useful.
 _ALLOCATION: tuple[tuple[AttackKind, int], ...] = (
-    (AttackKind.CORRECT, 15),
+    (AttackKind.CORRECT, 13),
     (AttackKind.WRONG_QUANTITY, 5),
     (AttackKind.PRICE_CHANGED, 4),
     (AttackKind.WRONG_VARIANT, 4),
@@ -98,6 +101,7 @@ _ALLOCATION: tuple[tuple[AttackKind, int], ...] = (
     (AttackKind.CURRENCY_MISMATCH, 3),
     (AttackKind.OVER_CAP, 3),
     (AttackKind.CART_CHANGED_AFTER_CONFIRM, 3),
+    (AttackKind.STALE_AUTHORIZATION, 2),
     (AttackKind.DUPLICATE_CHECKOUT, 2),
     (AttackKind.MODEL_INSISTS_OK, 2),
 )
@@ -249,12 +253,16 @@ def _line(quantity=_QUANTITY, unit_price=_UNIT_PRICE, variant=_VARIANT) -> CartL
     )
 
 
-def _confirmed(intent: PurchaseIntent, expectation: CartExpectation, observed: ObservedCart) -> PurchaseIntent:
+def _confirmed(
+    intent: PurchaseIntent, expectation: CartExpectation, observed: ObservedCart,
+    confirmed_at: datetime | None = None,
+) -> PurchaseIntent:
     """Freeze a hash the way confirm_cart does — against the CORRECT cart,
     before whatever mutation this journey applies afterwards."""
     comparison = compare_cart(expectation, observed)
     return intent.model_copy(update={
         "status": IntentStatus.CONFIRMED, "confirmed_cart_hash": comparison.cart_hash,
+        "confirmed_at": confirmed_at or datetime.now(timezone.utc),
     })
 
 
@@ -383,6 +391,18 @@ def _one_journey(index: int, kind: AttackKind) -> Journey:
         allowed, failed = _run_gates(intent, expectation, moved)
         note = "cart total moved after the hash was frozen at confirmation (D-004)"
 
+    elif kind is AttackKind.STALE_AUTHORIZATION:
+        expectation = _expectation()
+        observed = _observed([_line()])
+        # A confirmation is proof the user approved THIS cart at THIS moment,
+        # not a standing permission. Confirmed well outside the freshness
+        # window (D-035) and never touched again — nothing about the cart
+        # itself is wrong, only how long ago it was looked at.
+        stale = datetime.now(timezone.utc) - timedelta(hours=2)
+        intent = _confirmed(_intent(index), expectation, observed, confirmed_at=stale)
+        allowed, failed = _run_gates(intent, expectation, observed)
+        note = "confirmed 2 hours ago; nothing about the cart itself changed"
+
     elif kind is AttackKind.MODEL_INSISTS_OK:
         expectation = _expectation()
         correct = _observed([_line()])
@@ -494,7 +514,7 @@ def render_markdown(report: BenchmarkReport) -> str:
         f"| Gate evaluation latency, p95 | {report.p95_ms:.3f} ms |",
         "",
         "Latency here is the deterministic decision layer only — comparing a "
-        "typed cart against a typed intent and running twelve gates. It "
+        "typed cart against a typed intent and running thirteen gates. It "
         "excludes the network calls to a merchant or to Razorpay, which this "
         "benchmark does not make; those are measured live in `make demo`.",
         "",

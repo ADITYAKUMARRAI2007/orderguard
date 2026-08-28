@@ -8,6 +8,8 @@ is required.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from pydantic import BaseModel, ConfigDict
 
 from .cart_verifier import CartComparison, CartExpectation, compare_cart
@@ -20,7 +22,14 @@ __all__ = [
     "confirm_cart",
     "evaluate_pre_payment_gates",
     "ready_for_checkout",
+    "DEFAULT_AUTHORIZATION_TTL",
 ]
+
+# How long a confirmation stays valid before payment must be re-confirmed.
+# 15 minutes matches the order of magnitude Razorpay's own Checkout uses for a
+# created order before it goes stale, so the two expiries fail at a similar
+# horizon rather than one silently outliving the other.
+DEFAULT_AUTHORIZATION_TTL = timedelta(minutes=15)
 
 STRICT = ConfigDict(extra="forbid", frozen=True)
 
@@ -71,6 +80,7 @@ def confirm_cart(
             update={
                 "status": IntentStatus.CONFIRMED,
                 "confirmed_cart_hash": comparison.cart_hash,
+                "confirmed_at": datetime.now(timezone.utc),
             }
         ),
         comparison=comparison,
@@ -82,17 +92,49 @@ def evaluate_pre_payment_gates(
     expectation: CartExpectation,
     observed: ObservedCart,
     evidence: CheckoutEvidence,
+    *,
+    now: datetime | None = None,
+    max_authorization_age: timedelta = DEFAULT_AUTHORIZATION_TTL,
 ) -> GateResult:
-    """Run every pre-payment gate and block if a single fact is false."""
+    """Run every pre-payment gate and block if a single fact is false.
+
+    ``now`` defaults to the real clock; a caller passes a fixed value only to
+    test the boundary deterministically (see tests/test_checkout_guard.py).
+    Never let it default to anything a caller could quietly leave unset in a
+    way that skips the check — there is no "skip" state, only a real timestamp.
+    """
+    now = now or datetime.now(timezone.utc)
     comparison = compare_cart(expectation, observed)
     confirmation_matches = (
         intent.status is IntentStatus.CONFIRMED
         and intent.confirmed_cart_hash == comparison.cart_hash
     )
+    # TOCTOU: a confirmation is proof the user approved THIS cart at THIS
+    # moment, not a standing permission. Without an expiry, a hash confirmed
+    # once could authorise a checkout an hour, a day, or a week later, on
+    # prices and stock that may no longer be true. See D-035.
+    authorization_age = (
+        now - intent.confirmed_at if intent.confirmed_at is not None else None
+    )
+    authorization_fresh = (
+        authorization_age is not None and authorization_age <= max_authorization_age
+    )
     checks: dict[GateName, tuple[bool, str]] = {
         GateName.MERCHANT_PERMITTED: (
-            evidence.merchant_permitted,
-            f"Merchant {observed.merchant} is not in your approved list.",
+            # Two separate facts, both required. `evidence.merchant_permitted`
+            # says the APPROVED merchant is on the allowed list.
+            # `comparison.matches_merchant` says the cart IN FRONT OF US is
+            # actually that merchant. Before this, only the second was caught
+            # — and only as a side effect of the cart-hash including the
+            # merchant name, alongside every other structural check, which
+            # has its own dedicated gate as a first line of defense. Merchant
+            # was the one category relying solely on the hash catch-all
+            # (found while building diagnostics.py; every other attack kind
+            # already had both a specific gate AND the hash backup).
+            evidence.merchant_permitted and comparison.matches_merchant,
+            f"Merchant {observed.merchant} is not the one you approved."
+            if not comparison.matches_merchant
+            else f"Merchant {observed.merchant} is not in your approved list.",
         ),
         GateName.INTENT_VALID: (
             intent.status is IntentStatus.CONFIRMED,
@@ -133,6 +175,13 @@ def evaluate_pre_payment_gates(
         GateName.CONFIRMATION_MATCHES: (
             confirmation_matches,
             "The cart changed after you confirmed it, or has not been confirmed.",
+        ),
+        GateName.AUTHORIZATION_FRESH: (
+            authorization_fresh,
+            "Too long has passed since you confirmed this cart. Please review "
+            "and confirm it again before paying."
+            if authorization_age is not None
+            else "This purchase was never confirmed.",
         ),
         GateName.IDEMPOTENCY_FREE: (
             evidence.idempotency_free,

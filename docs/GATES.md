@@ -6,6 +6,22 @@
 twelve and the total to twenty-one. Building the live Shopify adapter showed the original
 eleven could not catch a merchant quoting one price during search and charging another in
 the cart, as long as the total stayed under the cap. A cap is a ceiling, not a price check.
+
+**Amended 2026-08-28 (D-035):** `G_AUTHORIZATION_FRESH` added, taking the pre-payment set
+to thirteen and the total to twenty-two. A confirmation is proof the user approved THIS
+cart at THIS moment, not a standing permission — without an expiry, a confirmed hash could
+authorise a checkout an hour, a day, or a week later, on prices and stock that may no
+longer be true. This is the project's answer to the standard time-of-check/time-of-use
+question a judge would ask.
+
+**Amended 2026-08-28 (D-036):** `G_MERCHANT_PERMITTED` widened. It checked only that the
+*approved* merchant was on the allowed list — never that the observed cart in front of us
+was actually that merchant. Every other structural mismatch (quantity, price, variant,
+currency) had both a dedicated gate and the cart-hash comparison as backup; merchant had
+only the hash backup. Found while building `diagnostics.py` when a wrong-merchant test
+diagnosed a gate that had never actually fired. Now checks both facts: the approved
+merchant is on the list, **and** the observed merchant is the one that was approved.
+
 The list is frozen so a count is never invented after the fact — not so a hole stays open.
 
 Every gate is **deterministic code over typed values**. No gate reads free text.
@@ -14,11 +30,11 @@ blocks the action and produces a human-readable reason.
 
 ---
 
-## Pre-payment: the twelve mandate gates
+## Pre-payment: the thirteen mandate gates
 
 | # | `GateName` | Checks | Failure reason shown to the user |
 |---|---|---|---|
-| 1 | `G_MERCHANT_PERMITTED` | merchant ∈ mandate's allowed list | "Merchant *X* is not in your approved list" |
+| 1 | `G_MERCHANT_PERMITTED` | approved merchant ∈ allowed list **and** observed merchant == approved merchant | "Merchant *X* is not the one you approved" |
 | 2 | `G_INTENT_VALID` | intent parses; `status == READY_FOR_CHECKOUT` | "The request could not be understood as a purchase" |
 | 3 | `G_FIELDS_COMPLETE` | `missing_fields` is empty | "Still missing: *quantity*" |
 | 4 | `G_CART_UNIQUE` | exactly one cart identified for this intent | "*N* carts match this request — cannot choose safely" |
@@ -29,6 +45,7 @@ blocks the action and produces a human-readable reason.
 | 8 | `G_CURRENCY_MATCH` | cart currency == intent currency | "Cart is in USD; request was INR" |
 | 9 | `G_WITHIN_CAP` | `cart_total_paise <= maximum_total_paise` | "Cart is ₹640; your limit is ₹500" |
 | 10 | `G_CONFIRMATION_MATCHES` | confirmation exists **and** matches `confirmed_cart_hash` | "The cart changed after you confirmed it" |
+| 10b | `G_AUTHORIZATION_FRESH` | `now - confirmed_at <= 15 minutes` (D-035) | "Too long has passed since you confirmed this cart" |
 | 11 | `G_IDEMPOTENCY_FREE` | this idempotency key has no completed effect | "This purchase has already been completed" |
 
 **Gates 6 and 9 are the demo.** Bananas ×60 fails gate 6. A ₹640 cart under a ₹500
@@ -36,7 +53,17 @@ cap fails gate 9. Both are caught by arithmetic, not by the model, and the model
 cannot argue past either.
 
 **Gate 10 is why `cart_hash` is frozen at confirmation (D-004).** If the hash were
-recomputed per attempt, an edited cart would silently pass a stale confirmation.
+recomputed per attempt, an edited cart would silently pass a stale confirmation. It
+is also, structurally, a catch-all: because the hash covers merchant, quantities,
+prices and currency together, gate 10 fires alongside *any* of gates 1/6/6b/8 as a
+second line of defense — see `diagnostics.py` for how a specific cause is recovered
+from a hash mismatch rather than left as one undifferentiated failure.
+
+**Gate 10b answers time-of-check/time-of-use.** Gate 10 proves the cart has not
+*changed* since confirmation. It says nothing about *how long ago* that confirmation
+was. A confirmed hash with no expiry could authorise a checkout on stock and prices
+that are no longer true. 15 minutes was chosen to sit near the order of magnitude of
+Razorpay's own order-creation window, so the two expiries fail at a similar horizon.
 
 ---
 
