@@ -1131,3 +1131,78 @@ An assistant that cannot say why it failed cannot be trusted when it succeeds.
 ## Remaining limitation
 Web results are links. We still cannot buy an onion, and the app now says so
 plainly instead of implying otherwise with an empty panel.
+
+# F-022 — Web search threw away 34 of 40 results, and never saw the budget
+ID: F-022
+Date: 2026-08-28
+Checkpoint: CP-3
+
+## Expected behaviour
+"Under Rs 500" should mean the results shown are under Rs 500, and anything
+dearer should be shown as dearer rather than silently mixed in.
+
+## Actual behaviour
+Two separate faults, both invisible until the numbers were printed.
+
+  1. serper's /shopping endpoint returns about FORTY results. We sliced the
+     first six in Google's own relevance order and discarded the other 34
+     before doing anything with them.
+  2. `search_web` had no budget parameter at all. The user's stated cap lived on
+     the intent and was never passed. Nothing on screen said which results they
+     could afford.
+
+Together: six arbitrary results, unranked, unlabelled. The user's complaint was
+that web search "is not working effectively", which was exactly right.
+
+## Proof
+    num=3 -> 40 results      num=10 -> 40 results
+    num=6 -> 40 results      num=20 -> 40 results
+and search_web's signature had no budget argument.
+
+## Fix
+Every result the endpoint returns is now kept and ranked, not the first few.
+`search_web` takes quantity and budget_paise. Each result carries
+line_total_paise (price x quantity) and within_budget. Affordable first, then
+cheapest, then the ones with no price at all.
+
+Over-budget results are SHOWN and marked, never hidden: someone asking for
+onions under Rs 100 still wants to know the 10 kg sack is Rs 460.
+
+A result with no price is `within_budget = None`, not True. Not knowing is not
+the same as it fitting.
+
+    1 x laptop, budget Rs 1,000
+       -  ?     Myg          Laptop Prices in India
+       -  ?     Croma        Buy Latest Laptop Models
+    Rs 10,000 OVER  Vijaysales
+    Rs 20,000 OVER  Amazon
+    -> Nothing found is within Rs 1,000.00. The cheapest is Rs 10,000.00.
+
+## A second bug found while fixing the first
+The first version reported "6 of these are within Rs 500. 6 cost more and are
+marked" beside six affordable rows. The count was taken over everything fetched
+rather than over what survived the limit, so it named results that were not on
+screen. A number the user cannot see is worse than no number.
+Test: test_the_over_budget_count_matches_what_is_on_screen
+
+## Regression tests
+tests/test_websearch.py, six cases covering ranking, quantity, over-budget
+marking, unpriced results, the count, and no budget stated.
+
+## Lesson
+I built this feature, tested it, and shipped it without ever asking how many
+results the endpoint actually returns. Six looked like a reasonable page size;
+it was a 15% sample of the data, taken before the only filter that mattered.
+
+Slicing before ranking is the general form of this mistake, and it is quiet:
+the output looks plausible either way.
+
+## Production relevance
+A shopping assistant that ignores the budget the user just stated has ignored
+the only instruction they gave about money.
+
+## Remaining limitation
+Prices come from search snippets and are whatever Google reports — including
+wholesale per-piece rates that look implausibly low next to retail packs. We
+show what the source says and do not second-guess it, because inventing a
+plausibility rule would be guesswork with the user's money.

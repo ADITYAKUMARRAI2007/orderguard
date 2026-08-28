@@ -102,6 +102,7 @@ class ItemSearch(SearchOutcome):
 
     web: list[WebResult] = Field(default_factory=list)
     explanation: str = ""
+    web_budget_note: str = ""
 
 
 class ShoppingSession(BaseModel):
@@ -342,15 +343,21 @@ async def search_item(session_id: str, item_index: int) -> ItemSearch:
         return result
 
     shops = ", ".join(outcome.stores_searched) or "the stores I can reach"
-    found = await search_web(item.requested_product)
+    found = await search_web(
+        item.requested_product,
+        quantity=item.quantity,
+        budget_paise=session.intent.maximum_total_paise or None,
+    )
     result.web = found.results
+    result.web_budget_note = found.budget_note
 
     if result.web:
         result.explanation = (
             f"None of the shops I can buy from sell {item.requested_product}. "
             f"I searched {shops}. Here is what the web shows — you can open "
-            f"these yourself; I cannot add them to a cart."
-        )
+            f"these yourself; I cannot add them to a cart. "
+            f"{found.budget_note}"
+        ).strip()
     elif outcome.suggestions:
         result.explanation = (
             f"I could not find {item.requested_product} at {shops}. "
@@ -466,7 +473,11 @@ async def search_the_web(session_id: str, item_index: int) -> WebSearchOutcome:
         raise HTTPException(status_code=404, detail="unknown requested item")
 
     item = session.intent.items[item_index]
-    return await search_web(item.requested_product)
+    return await search_web(
+        item.requested_product,
+        quantity=item.quantity,
+        budget_paise=session.intent.maximum_total_paise or None,
+    )
 
 
 # --- shopping at a store nobody integrated ---------------------------------

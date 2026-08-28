@@ -66,8 +66,9 @@ async def test_results_are_labelled_with_the_shop_they_came_from():
     outcome = await search_web("cashews", provider=StubSearchProvider())
 
     assert outcome.worked
-    assert [r.site_label for r in outcome.results] == ["Amazon", "Flipkart"]
-    assert [r.claimed_price_paise for r in outcome.results] == [31000, 28900]
+    # cheapest first, so Flipkart's ₹289 leads Amazon's ₹310
+    assert [r.site_label for r in outcome.results] == ["Flipkart", "Amazon"]
+    assert [r.claimed_price_paise for r in outcome.results] == [28900, 31000]
 
 
 @pytest.mark.asyncio
@@ -173,10 +174,11 @@ async def test_shops_that_appear_nowhere_in_our_code_work_normally():
          "link": "https://www.kaipunnyam.com/products/x", "snippet": "₹350"},
     ]))
 
-    assert [r.site for r in outcome.results] == [
+    assert {r.site for r in outcome.results} == {
         "capefresh.in", "jewelfarmer.com", "nutribinge.in", "kaipunnyam.com",
-    ]
-    assert [r.claimed_price_paise for r in outcome.results] == [29900, 47000, 28000, 35000]
+    }
+    # cheapest first
+    assert [r.claimed_price_paise for r in outcome.results] == [28000, 29900, 35000, 47000]
 
 
 @pytest.mark.asyncio
@@ -188,7 +190,7 @@ async def test_a_shops_own_name_is_taken_from_the_title_when_we_do_not_know_it()
         {"title": "Buy Roasted Cashews Salted 200G online India | Cape Fresh Foods",
          "link": "https://capefresh.in/products/x", "snippet": "₹299"},
     ]))
-    assert [r.site_label for r in outcome.results] == ["Jewel Farmer", "Cape Fresh Foods"]
+    assert {r.site_label for r in outcome.results} == {"Jewel Farmer", "Cape Fresh Foods"}
 
 
 @pytest.mark.asyncio
@@ -238,7 +240,7 @@ async def test_the_merchant_named_by_the_search_engine_wins_over_the_link():
          "snippet": "₹299", "source": "Fitfire Consumer"},
     ]))
 
-    assert [r.site_label for r in outcome.results] == ["Amazon", "Fitfire Consumer"]
+    assert {r.site_label for r in outcome.results} == {"Amazon", "Fitfire Consumer"}
     assert "google" not in " ".join(r.site for r in outcome.results)
 
 
@@ -254,3 +256,102 @@ async def test_the_same_product_from_two_endpoints_is_shown_once():
 
     assert len(outcome.results) == 1
     assert outcome.results[0].claimed_price_paise == 32900
+
+
+# --- the budget the user actually stated ------------------------------------
+
+@pytest.mark.asyncio
+async def test_results_are_ranked_against_the_stated_budget():
+    """F-022: the budget never reached web search at all.
+
+    Someone saying "under ₹500" was shown results in Google's relevance order,
+    with nothing indicating which they could afford.
+    """
+    outcome = await search_web("earbuds", quantity=1, budget_paise=50000, limit=5,
+        provider=StubSearchProvider([
+            {"title": "Premium ANC Earbuds", "link": "https://a.example/1",
+             "snippet": "₹4,999", "source": "Amazon.in"},
+            {"title": "Budget TWS Earbuds", "link": "https://b.example/2",
+             "snippet": "₹399", "source": "Flipkart"},
+            {"title": "Mid-range Earbuds", "link": "https://c.example/3",
+             "snippet": "₹1,200", "source": "Myntra"},
+        ]))
+
+    # affordable first, then cheapest
+    assert [r.claimed_price_paise for r in outcome.results] == [39900, 120000, 499900]
+    assert [r.within_budget for r in outcome.results] == [True, False, False]
+    assert outcome.over_budget_count == 2
+    assert "1 of these are within ₹500.00" in outcome.budget_note
+
+
+@pytest.mark.asyncio
+async def test_the_budget_covers_the_whole_quantity():
+    """Two at ₹300 each is ₹600, which does not fit ₹500."""
+    outcome = await search_web("momos", quantity=2, budget_paise=50000,
+        provider=StubSearchProvider([
+            {"title": "Momos", "link": "https://a.example/1", "snippet": "₹300",
+             "source": "Zepto"},
+        ]))
+
+    result = outcome.results[0]
+    assert result.claimed_price_paise == 30000
+    assert result.line_total_paise == 60000        # for two
+    assert result.within_budget is False
+
+
+@pytest.mark.asyncio
+async def test_things_over_budget_are_shown_and_marked_not_hidden():
+    """Someone asking for onions under ₹100 still wants to know the 10 kg sack
+    exists at ₹460. Hiding it answers a question they did not ask."""
+    outcome = await search_web("onion", budget_paise=10000,
+        provider=StubSearchProvider([
+            {"title": "Onion 10 kg sack", "link": "https://a.example/1",
+             "snippet": "₹460", "source": "Hyperpure"},
+        ]))
+
+    assert len(outcome.results) == 1
+    assert outcome.results[0].within_budget is False
+    assert "Nothing found is within ₹100.00" in outcome.budget_note
+    assert "cheapest is ₹460.00" in outcome.budget_note
+
+
+@pytest.mark.asyncio
+async def test_a_result_with_no_price_is_not_called_affordable():
+    """Not knowing a price is not the same as it fitting."""
+    outcome = await search_web("laptop", budget_paise=100000,
+        provider=StubSearchProvider([
+            {"title": "Buy Laptops Online", "link": "https://a.example/1",
+             "snippet": "great deals", "source": "Croma"},
+        ]))
+
+    result = outcome.results[0]
+    assert result.claimed_price_paise is None
+    assert result.within_budget is None            # not True
+    assert outcome.unpriced_count == 1
+
+
+@pytest.mark.asyncio
+async def test_the_over_budget_count_matches_what_is_on_screen():
+    """Reporting "6 cost more" beside six affordable rows is simply false.
+
+    The count was taken over everything fetched rather than what survived the
+    limit, so it named results the user could not see.
+    """
+    cheap = [{"title": f"Cheap {i}", "link": f"https://a.example/{i}",
+              "snippet": "₹10", "source": "Shop"} for i in range(5)]
+    dear = [{"title": f"Dear {i}", "link": f"https://b.example/{i}",
+             "snippet": "₹9,999", "source": "Shop"} for i in range(5)]
+
+    outcome = await search_web("thing", budget_paise=10000, limit=3,
+                               provider=StubSearchProvider(cheap + dear))
+
+    assert len(outcome.results) == 3
+    assert outcome.over_budget_count == 0          # none of the three shown
+    assert outcome.budget_note == "All of these are within ₹100.00."
+
+
+@pytest.mark.asyncio
+async def test_no_budget_means_no_claims_about_affordability():
+    outcome = await search_web("cashews", provider=StubSearchProvider())
+    assert all(r.within_budget is None for r in outcome.results)
+    assert outcome.budget_note == ""

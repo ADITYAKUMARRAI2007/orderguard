@@ -182,12 +182,14 @@ function renderNothingFound(card) {
     const title = document.createElement("div"); title.className = "offer-title";
     title.textContent = result.title;
     const meta = document.createElement("div"); meta.className = "offer-meta";
-    meta.textContent = `${result.site_label || result.site} · opens in a new tab`;
+    const budget = result.within_budget === false ? " · over your limit"
+      : result.within_budget === true ? " · within your limit" : "";
+    meta.textContent = `${result.site_label || result.site}${budget} · opens in a new tab`;
     info.append(title, meta);
 
     const price = document.createElement("div"); price.className = "offer-price";
-    price.textContent = result.claimed_price_paise === null || result.claimed_price_paise === undefined
-      ? "—" : money(result.claimed_price_paise);
+    const total = result.line_total_paise ?? result.claimed_price_paise;
+    price.textContent = total === null || total === undefined ? "—" : money(total);
 
     // A link, never a Choose button. Nothing here can enter a cart.
     const open = document.createElement("a");

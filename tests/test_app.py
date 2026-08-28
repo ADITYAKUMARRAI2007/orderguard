@@ -425,8 +425,9 @@ def test_web_results_are_offered_separately_from_things_you_can_buy(
 
     found = memory_client.post(f"/api/sessions/{session_id}/items/0/web").json()
 
-    assert [r["site_label"] for r in found["results"]] == ["Amazon", "Flipkart"]
-    assert found["results"][0]["claimed_price_paise"] == 31000
+    assert {r["site_label"] for r in found["results"]} == {"Amazon", "Flipkart"}
+    # cheapest first now that a budget can be applied
+    assert found["results"][0]["claimed_price_paise"] == 28900
     # nothing in a web result can be selected
     assert "variant_id" not in found["results"][0]
 

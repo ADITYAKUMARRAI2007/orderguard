@@ -143,6 +143,10 @@ class WebResult(BaseModel):
     snippet: str = ""
     image: str = ""
     claimed_price_paise: int | None = None
+    # None when no budget was stated, or when the page quoted no price at all.
+    # A missing price is NOT "within budget" — we simply do not know.
+    within_budget: bool | None = None
+    line_total_paise: int | None = None
 
     @property
     def shoppable_here(self) -> bool:
@@ -157,10 +161,33 @@ class WebSearchOutcome(BaseModel):
     provider: str
     results: list[WebResult] = Field(default_factory=list)
     unavailable_reason: str = ""
+    budget_paise: int | None = None
+    quantity: int = 1
+    over_budget_count: int = 0
+    unpriced_count: int = 0
 
     @property
     def worked(self) -> bool:
         return not self.unavailable_reason
+
+    @property
+    def budget_note(self) -> str:
+        """One sentence about the budget, or nothing."""
+        if self.budget_paise is None or not self.results:
+            return ""
+        within = sum(1 for r in self.results if r.within_budget)
+        limit = f"₹{self.budget_paise / 100:,.2f}"
+        if within and not self.over_budget_count:
+            return f"All of these are within {limit}."
+        if within:
+            return (
+                f"{within} of these are within {limit}. "
+                f"{self.over_budget_count} cost more and are marked."
+            )
+        return (
+            f"Nothing found is within {limit}. The cheapest is "
+            f"₹{min(r.line_total_paise for r in self.results if r.line_total_paise) / 100:,.2f}."
+        )
 
 
 # --- providers --------------------------------------------------------------
@@ -228,7 +255,11 @@ class SerperProvider:
         results: list[dict] = []
 
         if isinstance(shopping, dict):
-            for item in (shopping.get("shopping") or [])[:limit]:
+            # Everything the endpoint gives, not the first few. It returns
+            # around forty; keeping six of them in Google's own order meant
+            # discarding most of the catalogue before the budget was applied
+            # (F-022).
+            for item in (shopping.get("shopping") or []):
                 results.append({
                     "title": str(item.get("title") or ""),
                     "link": str(item.get("link") or ""),
@@ -239,7 +270,7 @@ class SerperProvider:
                 })
 
         if isinstance(organic, dict):
-            for item in (organic.get("organic") or [])[:limit]:
+            for item in (organic.get("organic") or []):
                 results.append({
                     "title": str(item.get("title") or ""),
                     "link": str(item.get("link") or ""),
@@ -325,17 +356,26 @@ async def search_web(
     *,
     provider: SearchProvider | None = None,
     limit: int = 6,
+    quantity: int = 1,
+    budget_paise: int | None = None,
     shopping_terms: str = "price buy online India",
 ) -> WebSearchOutcome:
-    """Search the open web for a product. Never raises."""
+    """Search the open web for a product. Never raises.
+
+    ``budget_paise`` is what the user said they would spend, for the whole
+    quantity. Results within it are shown first and the rest are marked, rather
+    than hidden — a shopper who asked for onions under ₹100 still wants to know
+    the 10 kg sack is ₹460.
+    """
     provider = provider or provider_from_env()
     phrased = f"{query} {shopping_terms}".strip()
 
     try:
-        raw = await provider.search(phrased, limit)
+        raw = await provider.search(phrased, max(limit, 20))
     except Exception as exc:                    # noqa: BLE001 - a dead search is not a dead app
         return WebSearchOutcome(
-            query=query, provider=provider.name, unavailable_reason=str(exc)
+            query=query, provider=provider.name, unavailable_reason=str(exc),
+            budget_paise=budget_paise, quantity=quantity,
         )
 
     results: list[WebResult] = []
@@ -375,4 +415,38 @@ async def search_web(
         seen.add(key)
         unique.append(result)
 
-    return WebSearchOutcome(query=query, provider=provider.name, results=unique[:limit])
+    # Work out what each one costs for the quantity asked, and whether that
+    # fits. A result with no price is left as None: not knowing is not the same
+    # as being affordable, and marking it either way would be a guess.
+    for result in unique:
+        if result.claimed_price_paise is None:
+            continue
+        result.line_total_paise = result.claimed_price_paise * max(quantity, 1)
+        if budget_paise is not None:
+            result.within_budget = result.line_total_paise <= budget_paise
+
+    # Affordable first, then cheapest, then the ones we could not price. Over
+    # budget is shown, not hidden: someone asking for onions under Rs 100 still
+    # wants to know the 10 kg sack exists at Rs 460.
+    unique.sort(
+        key=lambda r: (
+            r.within_budget is False,
+            r.line_total_paise is None,
+            r.line_total_paise or 0,
+        )
+    )
+
+    shown = unique[:limit]
+
+    # Counted over what is SHOWN, not over everything fetched. Reporting "6 cost
+    # more" beside six affordable rows is simply false, and a number the user
+    # cannot see on screen is worse than no number.
+    return WebSearchOutcome(
+        query=query,
+        provider=provider.name,
+        results=shown,
+        budget_paise=budget_paise,
+        quantity=quantity,
+        over_budget_count=sum(1 for r in shown if r.within_budget is False),
+        unpriced_count=sum(1 for r in shown if r.claimed_price_paise is None),
+    )
