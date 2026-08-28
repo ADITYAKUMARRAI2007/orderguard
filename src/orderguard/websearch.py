@@ -52,12 +52,24 @@ _PRICE = re.compile(
     r"(?:₹|\bRs\.?\s*|\bINR\s*)\s*([0-9][0-9,]*)(?:\.([0-9]{1,2}))?", re.IGNORECASE
 )
 
-_KNOWN_SHOPS = {
+# SPELLINGS, not an allowlist. Search covers the whole web; this only fixes the
+# capitalisation of shops whose names a domain cannot spell — "tatacliq.com"
+# should read "Tata CLiQ", not "Tatacliq". Every other site is handled by
+# _site_of, which derives a label from the page title or the domain. Nothing
+# here decides which results are returned.
+_SHOP_SPELLINGS = {
     "amazon.in": "Amazon", "amazon.com": "Amazon", "flipkart.com": "Flipkart",
     "myntra.com": "Myntra", "nykaa.com": "Nykaa", "ajio.com": "AJIO",
     "meesho.com": "Meesho", "tatacliq.com": "Tata CLiQ", "bigbasket.com": "BigBasket",
     "blinkit.com": "Blinkit", "zeptonow.com": "Zepto", "jiomart.com": "JioMart",
+    "indiamart.com": "IndiaMART",
 }
+
+# Search engines put the shop's own name at the end of a title, after a
+# separator: "Roasted Kaju 200g - Buy Salted Cashews | JEWEL FARMER".
+# Reading it there beats guessing from a domain, which cannot tell that
+# "jewelfarmer.com" is two words.
+_TITLE_TAIL = re.compile(r"[|–—-]\s*([^|–—-]{2,40})\s*$")
 
 
 def price_from_text(text: str) -> int | None:
@@ -78,13 +90,33 @@ def price_from_text(text: str) -> int | None:
     return paise
 
 
-def _site_of(url: str) -> tuple[str, str]:
+def _site_of(url: str, title: str = "") -> tuple[str, str]:
+    """Work out which shop a result is from, for any site on the web.
+
+    Order of preference: a spelling we know, then the shop's own name as the
+    search engine printed it in the title, then the domain.
+    """
     host = re.sub(r"^https?://", "", url or "").split("/")[0].lower()
     host = host.removeprefix("www.")
-    for domain, label in _KNOWN_SHOPS.items():
+    if not host:
+        return "", ""
+
+    for domain, label in _SHOP_SPELLINGS.items():
         if host == domain or host.endswith("." + domain):
             return domain, label
-    return host, host.split(".")[0].title() if host else ""
+
+    stem = host.split(".")[0]
+    tail = _TITLE_TAIL.search(title or "")
+    if tail:
+        candidate = tail.group(1).strip()
+        # Only trust it when it plausibly names this site: the domain stem
+        # should be in there once the spaces are removed. That rules out
+        # titles ending in "Best Price in India".
+        squashed = re.sub(r"[^a-z0-9]", "", candidate.lower())
+        if squashed and (squashed in stem or stem in squashed):
+            return host, candidate.title() if candidate.isupper() else candidate
+
+    return host, stem.title()
 
 
 class WebResult(BaseModel):
@@ -267,8 +299,8 @@ async def search_web(
         url = str(item.get("link") or "")
         if not url.startswith("http"):
             continue
-        site, label = _site_of(url)
         title = str(item.get("title") or "").strip()
+        site, label = _site_of(url, title)
         snippet = str(item.get("snippet") or "").strip()
         if not title:
             continue

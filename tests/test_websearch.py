@@ -150,3 +150,73 @@ async def test_long_snippets_are_truncated():
         "title": "Cashews", "link": "https://ok.example/p", "snippet": "x" * 5000,
     }]))
     assert len(outcome.results[0].snippet) == 300
+
+
+# --- the whole web, not a list ---------------------------------------------
+
+@pytest.mark.asyncio
+async def test_shops_that_appear_nowhere_in_our_code_work_normally():
+    """The spelling table is not an allowlist.
+
+    These are real Google results for "roasted cashews 200g". Four of the sites
+    are not mentioned anywhere in this repository, and they come back with
+    prices and readable names exactly like the ones that are.
+    """
+    outcome = await search_web("roasted cashews 200g", limit=10, provider=StubSearchProvider([
+        {"title": "Buy Roasted Cashews Salted 200G online India | Cape Fresh Foods",
+         "link": "https://capefresh.in/products/x", "snippet": "₹299 free shipping"},
+        {"title": "Roasted Kaju 200g - Buy Salted Cashews Online | JEWEL FARMER",
+         "link": "https://www.jewelfarmer.com/products/x", "snippet": "₹470 taxes included"},
+        {"title": "Buy Roasted & Salted Cashews -200g",
+         "link": "https://nutribinge.in/products/x", "snippet": "₹280 tax included"},
+        {"title": "Spicy Roasted Cashews | Kaipunnyam",
+         "link": "https://www.kaipunnyam.com/products/x", "snippet": "₹350"},
+    ]))
+
+    assert [r.site for r in outcome.results] == [
+        "capefresh.in", "jewelfarmer.com", "nutribinge.in", "kaipunnyam.com",
+    ]
+    assert [r.claimed_price_paise for r in outcome.results] == [29900, 47000, 28000, 35000]
+
+
+@pytest.mark.asyncio
+async def test_a_shops_own_name_is_taken_from_the_title_when_we_do_not_know_it():
+    """A domain cannot tell you "jewelfarmer" is two words. The title can."""
+    outcome = await search_web("cashews", provider=StubSearchProvider([
+        {"title": "Roasted Kaju 200g - Buy Salted Cashews Online | JEWEL FARMER",
+         "link": "https://www.jewelfarmer.com/products/x", "snippet": "₹470"},
+        {"title": "Buy Roasted Cashews Salted 200G online India | Cape Fresh Foods",
+         "link": "https://capefresh.in/products/x", "snippet": "₹299"},
+    ]))
+    assert [r.site_label for r in outcome.results] == ["Jewel Farmer", "Cape Fresh Foods"]
+
+
+@pytest.mark.asyncio
+async def test_a_generic_title_ending_does_not_become_the_shop_name():
+    """"Roasted Cashew at Best Price in India" must not name the shop.
+
+    The trailing phrase is only trusted when it plausibly matches the domain.
+    """
+    outcome = await search_web("cashews", provider=StubSearchProvider([
+        {"title": "Roasted Cashew at Best Price in India",
+         "link": "https://someshop.co.in/p/1", "snippet": "₹240"},
+    ]))
+    assert outcome.results[0].site_label == "Someshop"
+
+
+def test_the_spelling_table_only_ever_changes_a_name():
+    """It must never be usable to include or exclude a site.
+
+    A regex over the module: the table is read in exactly one place, and that
+    place returns a label.
+    """
+    import inspect
+
+    from orderguard import websearch
+
+    source = inspect.getsource(websearch)
+    uses = [line for line in source.splitlines() if "_SHOP_SPELLINGS" in line]
+    # the definition, the docstring mention, and the single lookup loop
+    assert sum("for domain, label in _SHOP_SPELLINGS" in u for u in uses) == 1
+    assert not any("not in _SHOP_SPELLINGS" in u for u in uses)
+    assert not any("if host in _SHOP_SPELLINGS" in u for u in uses)
