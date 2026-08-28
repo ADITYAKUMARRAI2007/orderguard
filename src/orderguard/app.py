@@ -18,7 +18,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .cart_verifier import ApprovedCartLine, CartExpectation, compare_cart
 from .checkout_guard import CheckoutEvidence, ConfirmationResult, confirm_cart, evaluate_pre_payment_gates, ready_for_checkout
-from .commerce import AdapterError, Location, Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
+from .commerce import (
+    AdapterError,
+    FreshCartAdapter,
+    Location,
+    Offer,
+    ScoredOffer,
+    SearchOutcome,
+    ShopifyMCPAdapter,
+    search_stores,
+)
 from .commerce.discovery import DiscoveryRefused, discover
 from .commerce.stores import ALL as ALL_STORES, Store, for_query
 from .connectors import CONNECTORS, summary as connector_summary
@@ -321,6 +330,37 @@ async def search_item(session_id: str, item_index: int) -> ItemSearch:
 
     item = session.intent.items[item_index]
 
+    # FreshCart is ours — it is where the Razorpay test payment actually runs
+    # (D-020: a Shopify store collects its own money, we never can). It is
+    # opt-in by name only, never mixed into a blind search across every real
+    # store, because its catalogue is synthetic and the rest are not.
+    if session.intent.merchant.strip().lower() == "freshcart":
+        async with FreshCartAdapter() as fc:
+            offers = await fc.search(item.requested_product, limit=8)
+        outcome = SearchOutcome(
+            query=item.requested_product, quantity=item.quantity,
+            budget_minor=session.intent.maximum_total_paise,
+            offers=[
+                ScoredOffer(
+                    offer=offer, relevance=1.0, in_stock=offer.available, priced=True,
+                    within_budget=offer.total_minor(item.quantity) <= session.intent.maximum_total_paise,
+                    line_total_minor=offer.total_minor(item.quantity),
+                )
+                for offer in offers
+            ],
+            stores_searched=["FreshCart"],
+        )
+        session.offers_by_item[item_index] = {
+            _offer_key(scored.offer): scored.offer for scored in outcome.offers
+        }
+        result = ItemSearch(**outcome.model_dump())
+        if not outcome.offers:
+            result.explanation = (
+                f"FreshCart does not stock {item.requested_product}. "
+                f"Try a different item, or ask for a real store instead."
+            )
+        return result
+
     # A store the user named, or one they told us to remember, narrows the
     # search. Anything else searches everywhere. Narrowing is announced on the
     # session; it never happens silently.
@@ -422,8 +462,16 @@ async def select_offer(
         )
 
     cart_id = session.observed_cart.cart_id if session.observed_cart else None
-    adapter = ShopifyMCPAdapter(offer.store, offer.store_label)
     quantity = session.intent.items[item_index].quantity
+    adapter = (
+        FreshCartAdapter() if offer.store == "freshcart"
+        else ShopifyMCPAdapter(offer.store, offer.store_label)
+    )
+    # FreshCart is one merchant with one cart per session; our own carts have
+    # no per-store key collision to worry about, so a stable id per session is
+    # enough rather than whatever cart_id a prior Shopify store handed back.
+    if offer.store == "freshcart":
+        cart_id = f"orderguard-{session_id}"
     try:
         async with adapter:
             written = await adapter.add_to_cart(offer.variant_id, quantity, cart_id)

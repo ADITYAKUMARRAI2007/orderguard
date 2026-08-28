@@ -12,7 +12,7 @@ from orderguard.models import CartLine, ObservedCart
 
 def _outcome() -> SearchOutcome:
     offer = Offer(
-        store="freshcart", store_label="FreshCart", product_id="p1",
+        store="slurrpfarm.com", store_label="Slurrp Farm", product_id="p1",
         variant_id="v1", title="Milk", price_minor=6600, currency="INR", available=True,
     )
     return SearchOutcome(
@@ -21,7 +21,7 @@ def _outcome() -> SearchOutcome:
             offer=offer, relevance=1.0, in_stock=True, priced=True,
             within_budget=True, line_total_minor=13200,
         )],
-        stores_searched=["FreshCart"],
+        stores_searched=["Slurrp Farm"],
     )
 
 
@@ -37,7 +37,7 @@ class _Adapter:
 
     async def add_to_cart(self, variant_id, quantity, cart_id=None):
         return ObservedCart(
-            merchant="freshcart", cart_id="cart-1",
+            merchant="slurrpfarm.com", cart_id="cart-1",
             lines=[CartLine(sku=variant_id, variant_id=variant_id, quantity=quantity, unit_price_paise=6600)],
             total_paise=quantity * 6600,
         )
@@ -51,7 +51,7 @@ class _OneItemProvider:
 
     def complete(self, system, user, schema):
         return {
-            "merchant": "freshcart",
+            "merchant": "slurrpfarm.com",
             "items": [{"requested_product": "milk", "quantity": 2, "unit": "litre"}],
             "maximum_total_paise": 50000,
         }
@@ -59,7 +59,21 @@ class _OneItemProvider:
 
 def test_live_shaped_flow_requires_search_then_explicit_selection(monkeypatch):
     app_module._SESSIONS.clear()
-    monkeypatch.setattr(app_module, "provider_from_env", lambda: StubProvider())
+    # Not the bare StubProvider(): its built-in default fixtures are keyed on
+    # a request literally containing "freshcart", which after wiring the real
+    # FreshCartAdapter would route this test into a live HTTP call instead of
+    # the mocked _Adapter it is meant to exercise.
+    stub = StubProvider(extra_answers={
+        "slurrpfarm.com: two litres of milk and six bananas, budget 500 rupees": {
+            "merchant": "slurrpfarm.com",
+            "items": [
+                {"requested_product": "milk", "quantity": 2, "unit": "litre"},
+                {"requested_product": "banana", "quantity": 6, "unit": "piece"},
+            ],
+            "maximum_total_paise": 50000,
+        },
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
 
     async def search(*args, **kwargs):
         return _outcome()
@@ -70,19 +84,19 @@ def test_live_shaped_flow_requires_search_then_explicit_selection(monkeypatch):
 
     created = client.post("/api/sessions", json={
         "user_id": "u1",
-        "request_text": "freshcart: two litres of milk and six bananas, budget 500 rupees",
+        "request_text": "slurrpfarm.com: two litres of milk and six bananas, budget 500 rupees",
     }).json()
     session_id = created["session_id"]
 
     assert client.post(f"/api/sessions/{session_id}/items/0/select", json={
-        "offer_key": "freshcart|v1", "explicit_user_selection": True,
+        "offer_key": "slurrpfarm.com|v1", "explicit_user_selection": True,
     }).status_code == 409
 
     searched = client.post(f"/api/sessions/{session_id}/items/0/search")
     assert searched.status_code == 200
 
     selected = client.post(f"/api/sessions/{session_id}/items/0/select", json={
-        "offer_key": "freshcart|v1", "explicit_user_selection": True,
+        "offer_key": "slurrpfarm.com|v1", "explicit_user_selection": True,
     })
     assert selected.status_code == 200
     assert selected.json()["observed_cart"]["cart_id"] == "cart-1"
@@ -106,7 +120,7 @@ def test_complete_single_item_flow_freezes_a_verified_cart(monkeypatch):
     session_id = client.post("/api/sessions", json={"user_id": "u1", "request_text": "two litres milk"}).json()["session_id"]
     assert client.post(f"/api/sessions/{session_id}/items/0/search").status_code == 200
     assert client.post(f"/api/sessions/{session_id}/items/0/select", json={
-        "offer_key": "freshcart|v1", "explicit_user_selection": True,
+        "offer_key": "slurrpfarm.com|v1", "explicit_user_selection": True,
     }).status_code == 200
 
     confirmed = client.post(f"/api/sessions/{session_id}/confirm")
@@ -116,14 +130,24 @@ def test_complete_single_item_flow_freezes_a_verified_cart(monkeypatch):
 
 
 def test_a_store_the_user_named_is_enforced_at_selection(monkeypatch):
-    """"Get me coffee from FreshCart" must not quietly buy from somewhere else.
+    """"Get me coffee from Slurrp Farm" must not quietly buy from somewhere else.
 
     Naming a store is a constraint, not a hint. The search may still surface
     offers from elsewhere — that is useful for comparison — but selecting one
     has to be refused.
     """
     app_module._SESSIONS.clear()
-    monkeypatch.setattr(app_module, "provider_from_env", lambda: StubProvider())
+    stub = StubProvider(extra_answers={
+        "slurrpfarm.com: two litres of milk and six bananas, budget 500 rupees": {
+            "merchant": "slurrpfarm.com",
+            "items": [
+                {"requested_product": "milk", "quantity": 2, "unit": "litre"},
+                {"requested_product": "banana", "quantity": 6, "unit": "piece"},
+            ],
+            "maximum_total_paise": 50000,
+        },
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
 
     elsewhere = Offer(
         store="othershop.example", store_label="Other Shop", product_id="p9",
@@ -144,7 +168,7 @@ def test_a_store_the_user_named_is_enforced_at_selection(monkeypatch):
 
     session_id = client.post("/api/sessions", json={
         "user_id": "u1",
-        "request_text": "freshcart: two litres of milk and six bananas, budget 500 rupees",
+        "request_text": "slurrpfarm.com: two litres of milk and six bananas, budget 500 rupees",
     }).json()["session_id"]
     client.post(f"/api/sessions/{session_id}/items/0/search")
 
@@ -152,10 +176,10 @@ def test_a_store_the_user_named_is_enforced_at_selection(monkeypatch):
         "offer_key": "othershop.example|v9", "explicit_user_selection": True,
     })
     assert refused.status_code == 409
-    assert "freshcart" in refused.json()["detail"].lower()
+    assert "slurrpfarm.com" in refused.json()["detail"].lower()
 
     allowed = client.post(f"/api/sessions/{session_id}/items/0/select", json={
-        "offer_key": "freshcart|v1", "explicit_user_selection": True,
+        "offer_key": "slurrpfarm.com|v1", "explicit_user_selection": True,
     })
     assert allowed.status_code == 200
 
@@ -553,7 +577,7 @@ def test_a_store_going_down_mid_write_is_a_clean_refusal_not_a_crash(
     memory_client.post(f"/api/sessions/{session_id}/items/0/search")
 
     response = memory_client.post(f"/api/sessions/{session_id}/items/0/select", json={
-        "offer_key": "freshcart|v1", "explicit_user_selection": True,
+        "offer_key": "slurrpfarm.com|v1", "explicit_user_selection": True,
     })
 
     assert response.status_code == 502
@@ -564,3 +588,111 @@ def test_a_store_going_down_mid_write_is_a_clean_refusal_not_a_crash(
     session = memory_client.get(f"/api/sessions/{session_id}").json()
     assert session["observed_cart"] is None
     assert session["selected_by_item"] == {}
+
+
+# --- FreshCart: our own merchant, routed by name --------------------------
+
+def test_naming_freshcart_routes_to_the_real_adapter_not_shopify(monkeypatch):
+    """The one merchant Razorpay can honestly pay (D-020). Naming it must use
+    FreshCartAdapter, never the generic Shopify multi-store search."""
+    from orderguard.commerce.base import Offer as CommerceOffer
+
+    app_module._SESSIONS.clear()
+    stub = StubProvider(extra_answers={
+        "freshcart: two litres of milk, budget 500 rupees": {
+            "merchant": "freshcart",
+            "items": [{"requested_product": "milk", "quantity": 2, "unit": "litre"}],
+            "maximum_total_paise": 50000,
+        },
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
+
+    shopify_was_called = False
+
+    async def shopify_search_should_not_run(*args, **kwargs):
+        nonlocal shopify_was_called
+        shopify_was_called = True
+        return _outcome()
+
+    class _FakeFreshCart:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def search(self, query, limit=10, location=None):
+            return [CommerceOffer(
+                store="freshcart", store_label="FreshCart", product_id="milk_1l",
+                variant_id="milk_1l", title="Amul Taaza Milk 1L", price_minor=6600,
+                currency="INR", available=True,
+            )]
+
+        async def add_to_cart(self, variant_id, quantity, cart_id=None):
+            return await self.read_cart(cart_id or "orderguard-session")
+
+        async def read_cart(self, cart_id):
+            return ObservedCart(
+                merchant="freshcart", cart_id=cart_id,
+                lines=[CartLine(sku="milk_1l", variant_id="milk_1l", quantity=2, unit_price_paise=6600)],
+                subtotal_paise=13200, delivery_paise=3000, total_paise=16200,
+            )
+
+    monkeypatch.setattr(app_module, "search_stores", shopify_search_should_not_run)
+    monkeypatch.setattr(app_module, "FreshCartAdapter", _FakeFreshCart)
+    client = TestClient(app_module.app)
+
+    session_id = client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "freshcart: two litres of milk, budget 500 rupees",
+    }).json()["session_id"]
+
+    out = client.post(f"/api/sessions/{session_id}/items/0/search").json()
+
+    assert shopify_was_called is False
+    assert out["stores_searched"] == ["FreshCart"]
+    assert out["offers"][0]["offer"]["title"] == "Amul Taaza Milk 1L"
+
+    selected = client.post(f"/api/sessions/{session_id}/items/0/select", json={
+        "offer_key": "freshcart|milk_1l", "explicit_user_selection": True,
+    })
+    assert selected.status_code == 200
+    assert selected.json()["observed_cart"]["total_paise"] == 16200
+
+
+def test_freshcart_with_nothing_in_stock_explains_and_offers_the_web(monkeypatch):
+    app_module._SESSIONS.clear()
+    stub = StubProvider(extra_answers={
+        "freshcart: caviar, budget 500 rupees": {
+            "merchant": "freshcart",
+            "items": [{"requested_product": "caviar", "quantity": 1, "unit": "unit"}],
+            "maximum_total_paise": 50000,
+        },
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
+
+    class _EmptyFreshCart:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def search(self, query, limit=10, location=None):
+            return []
+
+    monkeypatch.setattr(app_module, "FreshCartAdapter", _EmptyFreshCart)
+    client = TestClient(app_module.app)
+
+    session_id = client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "freshcart: caviar, budget 500 rupees",
+    }).json()["session_id"]
+
+    out = client.post(f"/api/sessions/{session_id}/items/0/search").json()
+    assert out["offers"] == []
+    assert "FreshCart does not stock caviar" in out["explanation"]

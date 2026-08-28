@@ -65,7 +65,7 @@ class _FakeRazorpayClient:
 
 def _outcome() -> SearchOutcome:
     offer = Offer(
-        store="freshcart", store_label="FreshCart", product_id="p1",
+        store="slurrpfarm.com", store_label="Slurrp Farm", product_id="p1",
         variant_id="v1", title="Milk", price_minor=6600, currency="INR", available=True,
     )
     return SearchOutcome(
@@ -74,7 +74,7 @@ def _outcome() -> SearchOutcome:
             offer=offer, relevance=1.0, in_stock=True, priced=True,
             within_budget=True, line_total_minor=13200,
         )],
-        stores_searched=["FreshCart"],
+        stores_searched=["Slurrp Farm"],
     )
 
 
@@ -90,7 +90,7 @@ class _Adapter:
 
     async def add_to_cart(self, variant_id, quantity, cart_id=None):
         return ObservedCart(
-            merchant="freshcart", cart_id="cart-1",
+            merchant="slurrpfarm.com", cart_id="cart-1",
             lines=[CartLine(sku=variant_id, variant_id=variant_id, quantity=quantity, unit_price_paise=6600)],
             total_paise=quantity * 6600,
         )
@@ -111,8 +111,8 @@ def client(monkeypatch):
     _FakeRazorpayClient.fetch_calls = 0
 
     stub = StubProvider(extra_answers={
-        "freshcart: two litres of milk, budget 500 rupees": {
-            "merchant": "freshcart",
+        "slurrpfarm.com: two litres of milk, budget 500 rupees": {
+            "merchant": "slurrpfarm.com",
             "items": [{"requested_product": "milk", "quantity": 2, "unit": "litre"}],
             "maximum_total_paise": 50000,
         },
@@ -130,11 +130,11 @@ def client(monkeypatch):
 def _confirmed_session(client) -> str:
     session_id = client.post("/api/sessions", json={
         "user_id": "buyer1",
-        "request_text": "freshcart: two litres of milk, budget 500 rupees",
+        "request_text": "slurrpfarm.com: two litres of milk, budget 500 rupees",
     }).json()["session_id"]
     client.post(f"/api/sessions/{session_id}/items/0/search")
     client.post(f"/api/sessions/{session_id}/items/0/select", json={
-        "offer_key": "freshcart|v1", "explicit_user_selection": True,
+        "offer_key": "slurrpfarm.com|v1", "explicit_user_selection": True,
     })
     confirmed = client.post(f"/api/sessions/{session_id}/confirm").json()
     assert confirmed["intent"] is not None, confirmed
@@ -168,11 +168,11 @@ def test_creating_the_order_twice_never_creates_a_second_razorpay_order(client):
 def test_payment_is_refused_before_the_cart_is_confirmed(client):
     session_id = client.post("/api/sessions", json={
         "user_id": "buyer1",
-        "request_text": "freshcart: two litres of milk, budget 500 rupees",
+        "request_text": "slurrpfarm.com: two litres of milk, budget 500 rupees",
     }).json()["session_id"]
     client.post(f"/api/sessions/{session_id}/items/0/search")
     client.post(f"/api/sessions/{session_id}/items/0/select", json={
-        "offer_key": "freshcart|v1", "explicit_user_selection": True,
+        "offer_key": "slurrpfarm.com|v1", "explicit_user_selection": True,
     })
     # confirmed, but never actually confirmed
     refused = client.post(f"/api/sessions/{session_id}/payment/order")

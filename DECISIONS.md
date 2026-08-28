@@ -691,3 +691,30 @@ Found while building it, before it was trusted: the duplicate_checkout journey
 Downside: latency reported (p50 0.06ms, p95 5.1ms) is the deterministic
   decision layer only, not network time to a merchant or Razorpay. Stated
   explicitly in the report so it is not read as end-to-end latency.
+
+## D-032 — FreshCart wired as a live adapter; it is where Razorpay actually pays
+Date: 2026-08-28
+Context: the payment leg (D-030) was proven only against mocks. D-020 already
+  established that Razorpay must never appear to pay a Shopify store's own
+  checkout — Shopify collects its own money. That leaves exactly one honest
+  target for a live proof: our own demo merchant.
+Decision: src/orderguard/commerce/freshcart.py, same shape as
+  ShopifyMCPAdapter (search/add_to_cart/read_cart, async context manager)
+  talking to demo_store/app.py's own JSON API over httpx. Opt-in by name only
+  ("freshcart") — never mixed into the blind multi-store search, because its
+  catalogue is synthetic and the other twenty-four are not.
+Verified live, both servers actually running, real Razorpay API:
+    request   "freshcart: two litres of milk under 300 rupees"
+    search    FreshCart -> Amul Taaza Milk 1L, Rs 66.00
+    write     add_to_cart on the real running demo store
+    read      independently read back: Rs 162.00 (Rs 132 + Rs 30 delivery)
+    confirm   12/12 gates
+    order     a REAL Razorpay order created: order_TVHwGDW7QxOoO9, Rs 162.00
+This is the first time the whole chain — natural language, a real cart, a real
+  read-back, all twelve gates, a real Razorpay order — ran end to end in one
+  pass rather than in separate mocked pieces.
+Renamed test fixtures: several existing tests used "freshcart" purely as an
+  arbitrary placeholder merchant name for mocked Shopify flows, unrelated to
+  the real store. Now that the name has real meaning, those tests use
+  "slurrpfarm.com" (a real, verified domain, so the merchant_permitted gate
+  passes for the right reason rather than a weakened check).
