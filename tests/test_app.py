@@ -394,3 +394,66 @@ def test_forgetting_everything_also_forgets_added_stores(memory_client, monkeypa
 
     assert memory_client.delete("/api/memory/u1").json()["deleted"]["SavedStore"] == 1
     assert memory_client.get("/api/users/u1/stores").json()["added_by_you"] == []
+
+
+def test_web_results_are_offered_separately_from_things_you_can_buy(
+    memory_client, monkeypatch
+):
+    """Two lists, never one.
+
+    Store offers can become a cart line. Web results are a claimed price and a
+    link. Merging them would be the first step towards treating them the same.
+    """
+    from orderguard.websearch import StubSearchProvider, search_web as real_search
+
+    stub = StubProvider(extra_answers={
+        "one pack of cashews, budget 900 rupees": {
+            "items": [{"requested_product": "cashews", "quantity": 1, "unit": "pack"}],
+            "maximum_total_paise": 90000,
+        }
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
+
+    async def web(query, **kwargs):
+        return await real_search(query, provider=StubSearchProvider())
+
+    monkeypatch.setattr(app_module, "search_web", web)
+
+    session_id = memory_client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "one pack of cashews, budget 900 rupees",
+    }).json()["session_id"]
+
+    found = memory_client.post(f"/api/sessions/{session_id}/items/0/web").json()
+
+    assert [r["site_label"] for r in found["results"]] == ["Amazon", "Flipkart"]
+    assert found["results"][0]["claimed_price_paise"] == 31000
+    # nothing in a web result can be selected
+    assert "variant_id" not in found["results"][0]
+
+
+def test_no_search_key_leaves_store_shopping_untouched(memory_client, monkeypatch):
+    stub = StubProvider(extra_answers={
+        "one pack of cashews, budget 900 rupees": {
+            "items": [{"requested_product": "cashews", "quantity": 1, "unit": "pack"}],
+            "maximum_total_paise": 90000,
+        }
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
+    monkeypatch.delenv("SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("SEARCH_PROVIDER", raising=False)
+
+    async def search(*args, **kwargs):
+        return _outcome()
+
+    monkeypatch.setattr(app_module, "search_stores", search)
+
+    session_id = memory_client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "one pack of cashews, budget 900 rupees",
+    }).json()["session_id"]
+
+    web = memory_client.post(f"/api/sessions/{session_id}/items/0/web").json()
+    assert web["results"] == []
+    assert "Store search works without it" in web["unavailable_reason"]
+
+    stores = memory_client.post(f"/api/sessions/{session_id}/items/0/search")
+    assert stores.status_code == 200          # unaffected

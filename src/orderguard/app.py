@@ -41,6 +41,7 @@ from .memory import (
     suggest_reorder,
 )
 from .models import ObservedCart, PurchaseIntent
+from .websearch import WebSearchOutcome, search_web
 
 app = FastAPI(title="OrderGuard", version="0.1.0")
 
@@ -348,6 +349,28 @@ def list_connectors() -> dict:
         "summary": connector_summary(),
         "connectors": [c._asdict() for c in CONNECTORS],
     }
+
+
+@app.post("/api/sessions/{session_id}/items/{item_index}/web")
+async def search_the_web(session_id: str, item_index: int) -> WebSearchOutcome:
+    """Look at shops we cannot buy from, so the comparison is honest.
+
+    Amazon, Flipkart and Myntra have no agent surface we may use. Pretending
+    they do not exist makes the price comparison worse for no gain, so we search
+    them and show what we find — as links to open, never as things to add.
+
+    Kept separate from the store search on purpose: one returns offers a cart
+    can be built from, the other returns claims. Merging them into one list
+    would be the first step towards treating them the same.
+    """
+    session = _session(session_id)
+    if session.intent is None:
+        raise HTTPException(status_code=409, detail="answer the clarification first")
+    if not 0 <= item_index < len(session.intent.items):
+        raise HTTPException(status_code=404, detail="unknown requested item")
+
+    item = session.intent.items[item_index]
+    return await search_web(item.requested_product)
 
 
 # --- shopping at a store nobody integrated ---------------------------------
