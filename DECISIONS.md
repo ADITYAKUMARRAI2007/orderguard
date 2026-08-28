@@ -551,3 +551,32 @@ Why this belongs in the pitch rather than only in the limitations: nineteen
   demand with no supply, and it is the argument for a guard layer that does not
   depend on any single merchant granting access — which is precisely what D-027
   builds. OrderGuard checks carts, so it needs no merchant's permission.
+
+## D-028 — The store list is a question, not a list
+Date: 2026-08-28
+Context: asked why shopping is limited to a curated set of stores, and whether
+  the user could just name a site.
+Finding: they can. Every Shopify storefront exposes /api/mcp. Twenty Indian D2C
+  brands were picked at random and probed; TEN answered with a full toolset,
+  none of them previously integrated (farmley.com, beardo.in, traya.health,
+  boldcare.in, dotandkey.com, sprig.co.in, bombayshavingcompany.com,
+  opensecret.in and others). Evidence: probe/discover.py.
+Decision: src/orderguard/commerce/discovery.py probes any domain a user names at
+  runtime and reports CAPABILITY, not reachability:
+    can_search + can_cart -> shoppable, saved, searched from then on
+    can_search only       -> browsable, NOT saved, and says so
+  Verified stores are remembered per user (memory.SavedStore), so the catalogue
+  grows by use rather than by us maintaining a list.
+Security — this is the part that needed care. A domain typed by a user becomes
+  an outbound request we make on their behalf, which is textbook SSRF. Rejected
+  BEFORE any connection is opened: localhost and friends, every bare IP address,
+  private ranges, cloud metadata (169.254.169.254), .local/.internal/.localhost,
+  and any non-http scheme. 15 parametrised tests, plus one that fails if a
+  blocked domain ever reaches httpx at all.
+Also: discovery reads tool NAMES only. A store whose tool description claims it
+  supports a cart it does not expose gains nothing by saying so. Consistent with
+  D-023.
+Not done, and deliberately: web search to find stores the user has not named.
+  It needs a paid search API and a key, and adds a dependency for a feature the
+  curated list plus user-added stores already covers. Recorded as the natural
+  next step, not built.

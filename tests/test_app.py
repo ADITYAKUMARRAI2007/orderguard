@@ -285,3 +285,112 @@ def test_memory_never_offers_a_purchase_only_a_suggestion(memory_client):
     body = memory_client.get("/api/memory/u1").json()
     assert body["reorder_suggestion"] is None
     assert "raise a spending limit" in body["note"]
+
+
+# --- shopping at a store nobody integrated ---------------------------------
+
+def test_a_store_the_user_names_can_be_added_and_is_then_searched(
+    memory_client, monkeypatch
+):
+    """The store list grows by use, not by us maintaining one.
+
+    Twenty Indian D2C brands were tried at random and ten answered, none of
+    which had been integrated. So "which stores work" is a question we ask a
+    domain, not a list we keep.
+    """
+    from orderguard.commerce.discovery import StoreCapability
+
+    async def fake_discover(domain, client=None):
+        return StoreCapability(
+            domain="farmley.com", reachable=True,
+            tools=("search_catalog", "update_cart", "get_cart"),
+            can_search=True, can_cart=True,
+        )
+
+    monkeypatch.setattr(app_module, "discover", fake_discover)
+
+    added = memory_client.post(
+        "/api/users/u1/stores", json={"domain": "https://farmley.com/collections/all"}
+    ).json()
+    assert added["shoppable"] and added["saved"]
+    assert added["domain"] == "farmley.com"
+
+    listed = memory_client.get("/api/users/u1/stores").json()
+    assert [s["domain"] for s in listed["added_by_you"]] == ["farmley.com"]
+
+    seen: list = []
+
+    async def search(*args, **kwargs):
+        seen.append([s.label for s in kwargs.get("stores")])
+        return _outcome()
+
+    stub = StubProvider(extra_answers={
+        "one pack of cashews, budget 900 rupees": {
+            "items": [{"requested_product": "cashews", "quantity": 1, "unit": "pack"}],
+            "maximum_total_paise": 90000,
+        }
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
+    monkeypatch.setattr(app_module, "search_stores", search)
+
+    session_id = memory_client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "one pack of cashews, budget 900 rupees",
+    }).json()["session_id"]
+    memory_client.post(f"/api/sessions/{session_id}/items/0/search")
+
+    assert "Farmley" in seen[0]          # searched alongside ours
+
+
+def test_a_store_that_cannot_take_a_cart_is_not_saved(memory_client, monkeypatch):
+    """Browsable is not buyable. Two real stores answered with search only."""
+    from orderguard.commerce.discovery import StoreCapability
+
+    async def fake_discover(domain, client=None):
+        return StoreCapability(
+            domain="minimalist.co", reachable=True, tools=("search_catalog",),
+            can_search=True, can_cart=False,
+        )
+
+    monkeypatch.setattr(app_module, "discover", fake_discover)
+
+    result = memory_client.post(
+        "/api/users/u1/stores", json={"domain": "minimalist.co"}
+    ).json()
+
+    assert result["shoppable"] is False
+    assert result["saved"] is False
+    assert "no cart" in result["message"]
+    assert memory_client.get("/api/users/u1/stores").json()["added_by_you"] == []
+
+
+def test_a_store_name_cannot_be_pointed_at_our_own_network(memory_client):
+    """The reason is passed through, so it does not look like the shop is down.
+
+    "Shop at 169.254.169.254" would otherwise make OrderGuard fetch cloud
+    credentials on the caller's behalf.
+    """
+    refused = memory_client.post(
+        "/api/users/u1/stores",
+        json={"domain": "http://169.254.169.254/latest/meta-data/"},
+    )
+    assert refused.status_code == 422
+    assert "not a shop domain" in refused.json()["detail"]
+
+    for hostile in ("localhost:8000", "127.0.0.1", "192.168.0.1", "shop.internal"):
+        assert memory_client.post(
+            "/api/users/u1/stores", json={"domain": hostile}
+        ).status_code == 422
+
+
+def test_forgetting_everything_also_forgets_added_stores(memory_client, monkeypatch):
+    from orderguard.commerce.discovery import StoreCapability
+
+    async def fake_discover(domain, client=None):
+        return StoreCapability("farmley.com", True, ("search_catalog", "update_cart",
+                               "get_cart"), True, True)
+
+    monkeypatch.setattr(app_module, "discover", fake_discover)
+    memory_client.post("/api/users/u1/stores", json={"domain": "farmley.com"})
+
+    assert memory_client.delete("/api/memory/u1").json()["deleted"]["SavedStore"] == 1
+    assert memory_client.get("/api/users/u1/stores").json()["added_by_you"] == []

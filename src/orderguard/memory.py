@@ -40,6 +40,10 @@ __all__ = [
     "ChatTurn",
     "RememberedOrder",
     "Preference",
+    "SavedStore",
+    "remember_store",
+    "saved_stores",
+    "forget_store",
     "memory_engine",
     "remember_chat_turn",
     "chat_history",
@@ -94,6 +98,22 @@ class RememberedOrder(SQLModel, table=True):
     quantity: int
     unit_price_paise: int
     requested_as: str = ""                      # the words the user originally used
+    created_at: datetime = Field(default_factory=_now)
+
+
+class SavedStore(SQLModel, table=True):
+    """A shop the user pointed us at that turned out to be shoppable.
+
+    This is how the store list grows: not by us maintaining one, but by people
+    naming shops. Only stores that actually answered with both search and cart
+    tools are saved, so a saved store is a verified one.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: str = Field(index=True)
+    domain: str = Field(index=True)
+    label: str = ""
+    tools: str = ""                             # names only, comma separated
     created_at: datetime = Field(default_factory=_now)
 
 
@@ -255,6 +275,55 @@ def suggest_reorder(engine: Engine, user_id: str) -> dict | None:
     }
 
 
+# --- stores the user pointed us at ------------------------------------------
+
+def remember_store(
+    engine: Engine, *, user_id: str, domain: str, label: str = "",
+    tools: tuple[str, ...] = (),
+) -> SavedStore:
+    """Save a shop that was verified shoppable. Saving twice is not an error."""
+    with Session(engine) as db:
+        existing = db.exec(
+            select(SavedStore).where(
+                SavedStore.user_id == user_id, SavedStore.domain == domain
+            )
+        ).first()
+        if existing is not None:
+            return existing
+
+        store = SavedStore(
+            user_id=user_id, domain=domain,
+            label=label or domain.split(".")[0].title(),
+            tools=",".join(tools),
+        )
+        db.add(store)
+        db.commit()
+        db.refresh(store)
+        return store
+
+
+def saved_stores(engine: Engine, user_id: str) -> list[SavedStore]:
+    with Session(engine) as db:
+        return list(
+            db.exec(
+                select(SavedStore)
+                .where(SavedStore.user_id == user_id)
+                .order_by(SavedStore.id)
+            )
+        )
+
+
+def forget_store(engine: Engine, user_id: str, domain: str) -> int:
+    with Session(engine) as db:
+        result = db.exec(
+            delete(SavedStore).where(
+                SavedStore.user_id == user_id, SavedStore.domain == domain
+            )
+        )
+        db.commit()
+        return result.rowcount or 0
+
+
 # --- preferences -----------------------------------------------------------
 
 _ALLOWED_KEYS = frozenset({"unit", "brand", "store", "size", "diet"})
@@ -329,7 +398,7 @@ def forget_everything(engine: Engine, user_id: str) -> dict[str, int]:
     """Delete this user's memory. Offered plainly, because it has to be."""
     with Session(engine) as db:
         counts = {}
-        for table in (Preference, RememberedOrder, ChatTurn):
+        for table in (Preference, RememberedOrder, ChatTurn, SavedStore):
             result = db.exec(delete(table).where(table.user_id == user_id))
             counts[table.__name__] = result.rowcount or 0
         db.commit()

@@ -19,7 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from .cart_verifier import ApprovedCartLine, CartExpectation
 from .checkout_guard import ConfirmationResult, confirm_cart, ready_for_checkout
 from .commerce import GROCERY, Offer, SearchOutcome, ShopifyMCPAdapter, search_stores
-from .commerce.stores import ALL as ALL_STORES
+from .commerce.discovery import DiscoveryRefused, discover
+from .commerce.stores import ALL as ALL_STORES, Store
 from .connectors import CONNECTORS, summary as connector_summary
 from .intent_compiler import CompilationResult, compile_intent
 from .llm import provider_from_env
@@ -32,7 +33,10 @@ from .memory import (
     memory_engine,
     preferences,
     recent_orders,
+    forget_store,
     remember_chat_turn,
+    remember_store,
+    saved_stores,
     set_preference,
     suggest_reorder,
 )
@@ -219,10 +223,19 @@ async def search_item(session_id: str, item_index: int) -> SearchOutcome:
     wanted = session.intent.merchant or preferences(
         MEMORY, session.user_id, session_id=session_id
     ).get("store", "")
-    stores = GROCERY
+
+    # Stores the user added themselves are searched alongside ours. This is what
+    # makes the catalogue grow by use rather than by us maintaining a list.
+    added = tuple(
+        Store(domain=s.domain, label=s.label, kind="added")
+        for s in saved_stores(MEMORY, session.user_id)
+    )
+    searchable = GROCERY + added
+
+    stores = searchable
     if wanted:
         matched = tuple(
-            s for s in ALL_STORES
+            s for s in ALL_STORES + added
             if wanted.lower() in {s.domain.lower(), s.label.lower()}
         )
         if matched:
@@ -321,6 +334,63 @@ def list_connectors() -> dict:
         "summary": connector_summary(),
         "connectors": [c._asdict() for c in CONNECTORS],
     }
+
+
+# --- shopping at a store nobody integrated ---------------------------------
+
+class DiscoverStoreRequest(BaseModel):
+    model_config = STRICT
+
+    domain: str = Field(min_length=1, max_length=253)
+
+
+@app.post("/api/users/{user_id}/stores")
+async def add_store(user_id: str, request: DiscoverStoreRequest) -> dict:
+    """Point OrderGuard at any shop and find out whether it can be used.
+
+    The store list is not something we maintain. Every Shopify storefront
+    answers at /api/mcp, so a shop this project has never heard of works the
+    moment someone names it. Verified shops are saved and searched from then on.
+    """
+    try:
+        found = await discover(request.domain)
+    except DiscoveryRefused as exc:
+        # Refusals include "that is this machine". Passing the reason through is
+        # the point; a bare 400 would look like the shop was merely offline.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if found.shoppable:
+        remember_store(
+            MEMORY, user_id=user_id, domain=found.domain, tools=found.tools
+        )
+
+    return {
+        "domain": found.domain,
+        "shoppable": found.shoppable,
+        "can_search": found.can_search,
+        "can_cart": found.can_cart,
+        "tools": list(found.tools),
+        "saved": found.shoppable,
+        "message": found.summary,
+    }
+
+
+@app.get("/api/users/{user_id}/stores")
+def list_saved_stores(user_id: str) -> dict:
+    return {
+        "verified_by_us": [
+            {"domain": s.domain, "label": s.label, "kind": s.kind} for s in ALL_STORES
+        ],
+        "added_by_you": [
+            {"domain": s.domain, "label": s.label, "added": s.created_at.date().isoformat()}
+            for s in saved_stores(MEMORY, user_id)
+        ],
+    }
+
+
+@app.delete("/api/users/{user_id}/stores/{domain}")
+def remove_saved_store(user_id: str, domain: str) -> dict:
+    return {"removed": forget_store(MEMORY, user_id, domain)}
 
 
 # --- memory ----------------------------------------------------------------
