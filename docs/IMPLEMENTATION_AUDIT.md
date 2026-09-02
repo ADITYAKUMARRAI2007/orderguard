@@ -1,20 +1,33 @@
 # Implementation audit
 
-Updated 2026-08-31 from source and executable tests, not README claims.
+Updated 2026-09-02 from source and executable tests, not README claims.
+Regenerate the numbers below with `make test-report && make feature-matrix`
+— they are read from `results/test_report.json` and
+`results/feature_matrix.json`, never typed by hand.
 
 ## Baseline and checkpoint
 
-- Initial worktree: heavily modified with existing uncommitted agent/UI work;
-  preserved without reset.
-- Required baseline: 610 tests passed.
-- Agent-foundation checkpoint: 629 tests pass after new regression coverage.
-- `make eval`: passes. `make feature-matrix`: 39 entries generated.
+- Current: **732 tests pass** (`results/test_report.json`).
+- `make eval`: passes. `make feature-matrix`: **40 entries generated**
+  (`results/feature_matrix.json`).
+- Since the 2026-08-31 checkpoint this table previously described: added the
+  Secret Executor (`executor.py`) and Execution Capability v1
+  (`capability.py`) boundary, real post-payment gates (`G_NO_REFUND`,
+  `G_SINGLE_CANDIDATE`, `G_NOT_EXPIRED` previously had no evaluation
+  function at all), mechanical architecture-boundary tests
+  (`tests/test_architecture_boundaries.py`), and replaced the
+  server-rendered `web/` app with a React frontend under `frontend/` — the
+  old `/app` route no longer exists.
 
 ## Source architecture and proven surfaces
 
 | Area | Implementing source | Executable evidence | Current status |
 |---|---|---|---|
-| FastAPI and `/app` commerce flow | `src/orderguard/app.py` | `test_app.py`, `test_payment_flow.py` | VERIFIED_TESTED |
+| FastAPI backend (session/commerce endpoints) | `src/orderguard/app.py` | `test_app.py`, `test_payment_flow.py` | VERIFIED_TESTED |
+| React frontend (Mission, Shop, Connectors, Attack Lab, Evidence, Features, Eval) | `frontend/src/` | `test_app.py` (XSS/session endpoints), manual browser verification during development | IMPLEMENTED; no automated browser/E2E suite yet |
+| Secret Executor (sole Razorpay-credential holder) | `executor.py` | `test_capability.py`, `test_architecture_boundaries.py` | VERIFIED_TESTED; live-verified against real Razorpay test-mode orders |
+| Execution Capability v1 (single-use, atomic, operation-bound) | `capability.py` | `test_capability.py` (incl. 50-way real concurrent consumption + mutation-test comparison) | VERIFIED_TESTED |
+| Architecture boundary enforcement (agent cannot import payment code; single construction/issue/consume site) | `tests/test_architecture_boundaries.py` | itself — a CI-runnable test, not only documented | VERIFIED_TESTED; not yet wired into a GitHub Actions workflow (see gaps below) |
 | OrderGuard MCP server | `mcp_server.py` | `test_mcp_server.py` | VERIFIED_TESTED |
 | Shopify/FreshCart adapters and aggregation | `commerce/` | `test_shopify_mcp.py`, `test_freshcart.py`, `test_orchestrator.py` | VERIFIED_TESTED; historical Shopify live evidence only |
 | Connector registry/eligibility | `agent/connector_registry.py`, `eligibility.py` | registry/eligibility/orchestrator tests | VERIFIED_TESTED |
@@ -31,7 +44,7 @@ Updated 2026-08-31 from source and executable tests, not README claims.
 | Custom MCP/SSRF | `custom_connectors.py`, `ssrf_guard.py` | custom/SSRF tests | VERIFIED_TESTED for discovery/control; general result normalization remains unsupported |
 | Missions/action lifecycle | `missions.py`, `lifecycle.py` | mission/lifecycle tests | R0 mission reads tested; R1/R2 execution intentionally disabled |
 | Attack Lab/baselines/eval | `benchmark.py`, `agent/attack_lab.py`, `scripts/eval.py` | attack/baseline/eval tests | VERIFIED_TESTED |
-| Six-screen UI | `web/` | API/XSS tests | IMPLEMENTED_UNVERIFIED in this checkpoint; browser visual pass still required |
+| Seven-screen React UI (superseded the old six-screen `web/` app, now deleted) | `frontend/src/pages/` | API/XSS tests; manual browser verification during development | IMPLEMENTED; no automated browser/E2E suite yet |
 
 ## Security-sensitive configuration
 

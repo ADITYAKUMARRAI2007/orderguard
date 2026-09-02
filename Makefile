@@ -1,4 +1,4 @@
-.PHONY: test test-offline lint eval feature-matrix test-report
+.PHONY: test test-offline lint eval feature-matrix test-report dev
 
 # Full test suite.
 test:
@@ -19,6 +19,18 @@ shop:
 # user calls its search endpoint; tests never touch the network.
 app:
 	uv run uvicorn orderguard.app:app --reload --port 8000 --env-file .env
+
+# One-command local launch: backend (:8000, auto-reload) and the real React
+# frontend (:5173, Vite) together — Ctrl-C stops both. This is what a fresh
+# clone should run; there is no more server-rendered /app route to open.
+dev:
+	@if [ ! -d frontend/node_modules ]; then cd frontend && npm install; fi
+	@echo "Backend:  http://127.0.0.1:8000"
+	@echo "Frontend: http://127.0.0.1:5173  <- open this"
+	@trap 'kill 0' EXIT INT TERM; \
+	(uv run uvicorn orderguard.app:app --reload --port 8000 --env-file .env) & \
+	(cd frontend && npm run dev) & \
+	wait
 
 # The whole product in one run, against real stores. Nothing stubbed.
 # No login, no payment; carts are anonymous and abandoned on exit.

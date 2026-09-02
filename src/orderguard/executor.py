@@ -75,7 +75,9 @@ async def execute_create_order(capability_db: Engine, capability_id: str) -> dic
     cannot override them by passing different values alongside the
     capability_id, because there is no parameter for that to override.
     """
-    capability, reason = consume_capability(capability_db, capability_id)
+    capability, reason = consume_capability(
+        capability_db, capability_id, expected_operation="razorpay.create_order",
+    )
     if capability is None:
         raise CapabilityRejected(reason)
 

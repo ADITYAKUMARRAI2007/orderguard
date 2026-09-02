@@ -1,32 +1,30 @@
-# React + TypeScript + Vite
+# OrderGuard — frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The React product surface: Mission (natural-language agent flow), Shop (real
+checkout against FreshCart), Connectors, Attack Lab, Evidence, Features, and
+Eval. See the [repo root README](../README.md) for what OrderGuard is and
+the security architecture this UI renders.
 
-Currently, two official plugins are available:
+## Run
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+From the repo root:
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+make dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+starts this frontend (Vite, `:5173`) together with the backend (`:8000`).
+To run just this frontend against an already-running backend:
+
+```bash
+npm install
+npm run dev
+```
+
+## Stack
+
+React + TypeScript + Vite, Tailwind, shadcn/ui components, Framer Motion for
+the pipeline/mission animations, three.js for the Mission page's 3D pipeline
+visualization. `src/lib/api.ts` and `src/lib/shop.ts` are the only files that
+talk to the backend — every number rendered elsewhere is read from what
+those return, never hardcoded in a component.

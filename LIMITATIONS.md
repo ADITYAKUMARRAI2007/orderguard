@@ -7,9 +7,22 @@ claims cannot drift to fit them.
 
 ## Scope
 
-- **The prototype supports ONE merchant end to end.** The `CommerceAdapter`
-  design shows how additional stores could be connected. That is not demonstrated.
+- **Real, live-verified payment execution (the full gates → capability →
+  executor → Razorpay path) is demonstrated end to end on one merchant
+  (FreshCart, our own).** Multiple connectors (Swiggy Instamart, Swiggy
+  Food, Shopify verified stores, GitHub as the required non-commerce proof)
+  are real, live-verified for search/read through the agent layer — see
+  `docs/CONNECTORS.md` for exactly what's live-verified per connector — but
+  a real Razorpay payment has only actually been completed against
+  FreshCart. Extending payment execution to another connector is a real
+  integration, not demonstrated yet, even though the gate/capability/executor
+  path itself is connector-agnostic by design.
 - Single-tenant. No authentication, no high availability, no multi-user isolation.
+- The Execution Capability boundary (`src/orderguard/capability.py`,
+  `executor.py`) is import discipline plus a database-level atomic gate
+  within one process — not a cryptographic capability nothing could forge,
+  and not a separate process/service a compromised process couldn't
+  introspect. See those modules' own docstrings.
 
 ## Data
 

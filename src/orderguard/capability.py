@@ -76,6 +76,7 @@ __all__ = [
     "ExecutionCapability", "capability_engine",
     "issue_capability", "consume_capability",
     "CAPABILITY_NOT_FOUND", "CAPABILITY_EXPIRED", "CAPABILITY_ALREADY_CONSUMED",
+    "CAPABILITY_WRONG_OPERATION",
 ]
 
 _DEFAULT_PATH = Path("data/capabilities.db")
@@ -91,6 +92,14 @@ DEFAULT_CAPABILITY_TTL = timedelta(seconds=60)
 CAPABILITY_NOT_FOUND = "CAPABILITY_NOT_FOUND"
 CAPABILITY_EXPIRED = "CAPABILITY_EXPIRED"
 CAPABILITY_ALREADY_CONSUMED = "CAPABILITY_ALREADY_CONSUMED"
+# Real, found gap (not hypothetical): consume_capability alone never
+# checked what a capability's own "operation" field said before this was
+# added -- a capability minted for one operation could be handed to any
+# executor call that only checked amount/currency/merchant. The consumed
+# row's operation must still be checked by the CALLER (executor.py) against
+# the specific action it is about to perform; this constant exists so that
+# check has a real, testable rejection reason instead of a silent pass.
+CAPABILITY_WRONG_OPERATION = "CAPABILITY_WRONG_OPERATION"
 
 
 def _now() -> datetime:
@@ -195,11 +204,22 @@ _CONSUME_LOCK = threading.Lock()
 
 
 def consume_capability(
-    engine: Engine, capability_id: str,
+    engine: Engine, capability_id: str, *, expected_operation: str,
 ) -> tuple[ExecutionCapability | None, str]:
     """Atomically consume a capability. Returns ``(capability, "")`` on the
     single call that wins, or ``(None, reason)`` for every other call —
     including every one of 49 concurrent losers in a replay attempt.
+
+    ``expected_operation`` is required, not optional, and is part of the
+    atomic WHERE clause itself — not a check applied after the fact by
+    whoever calls this. Real, found gap this closes: a capability's own
+    ``operation`` field was stored but never actually checked by anything;
+    a capability minted for one operation could previously be consumed by
+    a caller only checking amount/currency/merchant. A capability whose
+    stored operation does not match what THIS caller is about to perform
+    cannot be consumed here at all -- it fails closed with
+    CAPABILITY_WRONG_OPERATION, and remains available to whichever caller
+    (if any) actually names the operation it was issued for.
 
     The atomicity is the ``WHERE consumed_at IS NULL AND expires_at > now``
     clause, exactly ``ledger.py::finalize_if_pending``'s own pattern: SQLite
@@ -213,6 +233,7 @@ def consume_capability(
             update(ExecutionCapability)
             .where(
                 ExecutionCapability.capability_id == capability_id,
+                ExecutionCapability.operation == expected_operation,
                 ExecutionCapability.consumed_at.is_(None),
                 ExecutionCapability.expires_at > now,
             )
@@ -227,6 +248,8 @@ def consume_capability(
             return row, ""
         if row is None:
             return None, CAPABILITY_NOT_FOUND
+        if row.operation != expected_operation:
+            return None, CAPABILITY_WRONG_OPERATION
         if row.expires_at <= now:
             return None, CAPABILITY_EXPIRED
         return None, CAPABILITY_ALREADY_CONSUMED

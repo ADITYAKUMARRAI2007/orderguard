@@ -14,7 +14,7 @@ Not Track 04's D-010 metric set — that reconciles intent, Razorpay order and m
 | False-block rate (correct cart wrongly blocked) | 0% |
 | Duplicate business effects | 0 |
 | Gate evaluation latency, p50 | 0.060 ms |
-| Gate evaluation latency, p95 | 0.265 ms |
+| Gate evaluation latency, p95 | 0.246 ms |
 
 Latency here is the deterministic decision layer only — comparing a typed cart against a typed intent and running thirteen gates. It excludes the network calls to a merchant or to Razorpay, which this benchmark does not make; those are measured live in `make demo`.
 

@@ -22,18 +22,21 @@ from orderguard.capability import (
     CAPABILITY_ALREADY_CONSUMED,
     CAPABILITY_EXPIRED,
     CAPABILITY_NOT_FOUND,
+    CAPABILITY_WRONG_OPERATION,
     ExecutionCapability,
     capability_engine,
     consume_capability,
     issue_capability,
 )
+from orderguard.executor import CapabilityRejected, execute_create_order
+
+_OP = "razorpay.create_order"
 
 
 def _naive_now() -> datetime:
     # Same naive-UTC convention as capability.py's own _now() -- see that
     # module's docstring for why (SQLite strips tzinfo on round-trip).
     return datetime.now(timezone.utc).replace(tzinfo=None)
-from orderguard.executor import CapabilityRejected, execute_create_order
 
 
 def _db():
@@ -76,7 +79,7 @@ def test_two_mints_never_collide_on_capability_id_or_nonce():
 def test_a_fresh_capability_consumes_successfully_exactly_once():
     engine = _db()
     cap = _issue(engine)
-    consumed, reason = consume_capability(engine, cap.capability_id)
+    consumed, reason = consume_capability(engine, cap.capability_id, expected_operation=_OP)
     assert consumed is not None and reason == ""
     assert consumed.consumed_at is not None
 
@@ -86,17 +89,17 @@ def test_replaying_the_same_capability_id_is_rejected_not_reprocessed():
     already authorized one real execution to authorize a second one."""
     engine = _db()
     cap = _issue(engine)
-    first, _ = consume_capability(engine, cap.capability_id)
+    first, _ = consume_capability(engine, cap.capability_id, expected_operation=_OP)
     assert first is not None
 
-    second, reason = consume_capability(engine, cap.capability_id)
+    second, reason = consume_capability(engine, cap.capability_id, expected_operation=_OP)
     assert second is None
     assert reason == CAPABILITY_ALREADY_CONSUMED
 
 
 def test_an_unknown_capability_id_is_rejected():
     engine = _db()
-    consumed, reason = consume_capability(engine, "cap_never_issued")
+    consumed, reason = consume_capability(engine, "cap_never_issued", expected_operation=_OP)
     assert consumed is None
     assert reason == CAPABILITY_NOT_FOUND
 
@@ -104,9 +107,43 @@ def test_an_unknown_capability_id_is_rejected():
 def test_an_expired_capability_is_rejected_even_if_never_consumed():
     engine = _db()
     cap = _issue(engine, ttl=timedelta(seconds=-1))   # already expired at mint time
-    consumed, reason = consume_capability(engine, cap.capability_id)
+    consumed, reason = consume_capability(engine, cap.capability_id, expected_operation=_OP)
     assert consumed is None
     assert reason == CAPABILITY_EXPIRED
+
+
+def test_a_capability_minted_for_a_different_operation_is_rejected():
+    """Real, found gap (not hypothetical): consume_capability previously
+    never checked what a capability's own operation field said. A
+    capability minted for "razorpay.refund" (or anything other than
+    razorpay.create_order) must never be usable to start an order, even
+    though its amount/currency/merchant/receipt look otherwise valid."""
+    engine = _db()
+    cap = _issue(engine, operation="razorpay.refund")
+    consumed, reason = consume_capability(engine, cap.capability_id, expected_operation=_OP)
+    assert consumed is None
+    assert reason == CAPABILITY_WRONG_OPERATION
+
+    # And it is NOT silently consumed by the rejected attempt -- a caller
+    # that actually names the right operation could still use it.
+    matching, reason2 = consume_capability(
+        engine, cap.capability_id, expected_operation="razorpay.refund",
+    )
+    assert matching is not None and reason2 == ""
+
+
+async def test_execute_create_order_refuses_a_capability_minted_for_a_different_operation(monkeypatch):
+    """The end-to-end version of the same gap, through the real executor
+    entry point: Razorpay must never be called for a wrong-operation
+    capability."""
+    import orderguard.executor as executor_module
+    monkeypatch.setattr(executor_module, "RazorpayClient", _RazorpayClientThatMustNeverBeCalled)
+
+    engine = _db()
+    cap = _issue(engine, operation="razorpay.refund")
+    with pytest.raises(CapabilityRejected) as exc:
+        await execute_create_order(engine, cap.capability_id)
+    assert exc.value.reason == CAPABILITY_WRONG_OPERATION
 
 
 # --- the 50-way concurrent consumption proof --------------------------------
@@ -118,7 +155,7 @@ async def _consume_in_a_real_thread(engine, capability_id):
     False exists specifically to allow this), so the atomic UPDATE actually
     has to arbitrate real concurrent access, not just calls that happen to
     be issued one after another in Python source order."""
-    return await asyncio.to_thread(consume_capability, engine, capability_id)
+    return await asyncio.to_thread(consume_capability, engine, capability_id, expected_operation=_OP)
 
 
 async def _run_fifty_concurrent_consumptions(engine, capability_id):

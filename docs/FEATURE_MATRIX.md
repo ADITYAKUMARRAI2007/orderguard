@@ -1,6 +1,6 @@
 # Feature matrix
 
-Generated 2026-09-02T04:43:16.521320+00:00 by `scripts/feature_matrix.py` — this file and `results/feature_matrix.json` are written from the same list, so they cannot drift. No entry was added to round out a count.
+Generated 2026-09-02T09:02:21.867570+00:00 by `scripts/feature_matrix.py` — this file and `results/feature_matrix.json` are written from the same list, so they cannot drift. No entry was added to round out a count.
 
 **40 features total.**
 

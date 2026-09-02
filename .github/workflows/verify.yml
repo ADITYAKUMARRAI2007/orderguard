@@ -1,0 +1,83 @@
+name: verify
+
+# What "the tests pass" means for this repo, run by GitHub itself rather
+# than only claimed in docs — tests/test_architecture_boundaries.py's own
+# invariants (agent/ cannot import payment code, exactly one file
+# constructs a RazorpayClient, exactly one file mints/consumes a
+# capability) are checked here on every push and PR, not only when someone
+# remembers to run pytest locally.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # The rule that matters most: everything must pass with NO api key.
+      # Real network-dependent connector/LLM calls are never part of this
+      # suite -- see tests/ for how each is stubbed or skipped offline.
+      - name: Run test suite (no API keys)
+        run: |
+          ANTHROPIC_API_KEY= LLM_API_KEY= uv run pytest -v
+
+      - name: Regenerate benchmark/eval artifacts
+        run: uv run --offline --no-sync python scripts/eval.py
+
+      - name: Regenerate feature matrix
+        run: uv run --offline --no-sync python scripts/feature_matrix.py
+
+      - name: Regenerate test report
+        run: uv run python scripts/test_report.py
+
+      - name: Fail if any adversarial scenario was ever wrongly allowed
+        run: |
+          python3 -c "
+          import json
+          d = json.load(open('results/latest.json'))
+          rate = d['fixed_fifty']['false_match_rate']
+          assert rate == 0, f'fixed-fifty false-match rate is {rate}, expected 0'
+          rate = d['attack_lab']['false_match_rate']
+          assert rate == 0, f'hostile attack lab false-match rate is {rate}, expected 0'
+          print('adversarial scenarios: 0% false-match, as required')
+          "
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check + build
+        run: npm run build
