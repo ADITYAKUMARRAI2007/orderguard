@@ -126,12 +126,15 @@ app = FastAPI(title="OrderGuard", version="0.1.0")
 # path parameter, never a cookie), so allow_credentials stays False and a
 # wildcard origin is safe here -- there is no session token a third-party
 # page could ride along with a credentialed request. ALLOWED_ORIGIN, set in
-# the real deployment, narrows this to the actual deployed frontend URL
-# once one exists; unset (local dev, `make dev`) falls back to allowing
-# everything, matching the previous no-CORS-restriction behavior exactly.
+# the real deployment, narrows this to the actual deployed frontend URL(s)
+# once they exist (comma-separated if more than one, e.g. both a Render and
+# a Vercel frontend pointed at the same backend); unset (local dev,
+# `make dev`) falls back to allowing everything, matching the previous
+# no-CORS-restriction behavior exactly.
+_allowed_origins = os.environ.get("ALLOWED_ORIGIN", "")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.environ["ALLOWED_ORIGIN"]] if os.environ.get("ALLOWED_ORIGIN") else ["*"],
+    allow_origins=[o.strip() for o in _allowed_origins.split(",") if o.strip()] or ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
