@@ -174,6 +174,13 @@ class GeminiProvider:
             parts = body["candidates"][0]["content"]["parts"]
             text = "".join(part.get("text", "") for part in parts)
             result = json.loads(text)
+        except httpx.HTTPStatusError as exc:
+            # The generic LLMUnavailable message never reaches the user (see
+            # intent_compiler.py), but the response body is the only way to
+            # tell an invalid API key apart from a malformed request server-side.
+            raise LLMUnavailable(
+                f"Gemini HTTP {exc.response.status_code}: {exc.response.text[:500]}"
+            ) from exc
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
             raise LLMUnavailable("Gemini returned no usable structured response") from exc
         if not isinstance(result, dict):
