@@ -205,3 +205,32 @@ def test_a_gate_with_no_natural_diff_is_silently_skipped():
         reasons={str(GateName.ITEMS_AVAILABLE): "out of stock"},
     )
     assert diagnose(intent, expectation, correct, fake_failure) == []
+
+
+# --- every diagnosed failure carries a short reason code --------------------
+
+def test_a_quantity_mismatch_carries_the_short_reason_code():
+    expectation = _expectation()
+    correct = _correct_cart()
+    intent = _confirmed_intent(expectation, correct)
+
+    tampered = ObservedCart(
+        merchant="shop.example", cart_id="c1",
+        lines=[CartLine(sku="banana", variant_id="banana", quantity=60, unit_price_paise=1200)],
+        total_paise=72000,
+    )
+    gates = evaluate_pre_payment_gates(intent, expectation, tampered, _evidence())
+    diagnostics = {d.reason_code: d for d in diagnose(intent, expectation, tampered, gates)}
+    assert diagnostics[str(GateName.QUANTITIES_MATCH)].code == "OG-QTY-001"
+
+
+def test_every_diagnosed_gate_has_a_non_empty_code():
+    """diagnose() only ever diagnoses gates with a real natural diff, and
+    reason_codes.py covers every one of the 22 frozen gates — so nothing
+    diagnose() actually produces should ever carry an empty code."""
+    expectation = _expectation(maximum_total_paise=5000)
+    correct = _correct_cart()
+    intent = _confirmed_intent(expectation, correct, maximum_total_paise=5000)
+    gates = evaluate_pre_payment_gates(intent, expectation, correct, _evidence())
+    for d in diagnose(intent, expectation, correct, gates):
+        assert d.code, d.reason_code

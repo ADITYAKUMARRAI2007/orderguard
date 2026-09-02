@@ -46,14 +46,21 @@ async def test_a_store_the_user_added_themselves_is_shoppable():
 # --- shops we cannot use, and the difference between the reasons ------------
 
 @pytest.mark.asyncio
-async def test_swiggy_is_blocked_and_says_why():
-    """Real and capable. We are not allowed, and that is a different thing
-    from it not existing."""
-    verdict = await resolve_merchant("Swiggy")
+async def test_swiggy_instamart_is_blocked_here_and_says_where_to_shop_it_instead():
+    """As of 2026-08-29, Swiggy Instamart is genuinely connected and proven
+    live — through Claude's own session, not through this app's own direct
+    search. So this app still can't search it FOR you, but the reason has
+    changed from "we have no access" to "that's not this app's job"."""
+    verdict = await resolve_merchant("Swiggy Instamart")
     assert verdict.reach is Reach.BLOCKED
     assert not verdict.can_shop
-    assert "cannot shop Swiggy" in verdict.message
-    assert "approval process" in verdict.message
+    assert "cannot shop Swiggy Instamart" in verdict.message
+    assert "connected Claude session" in verdict.message
+
+    # a bare "Swiggy" no longer names exactly one connector — three real,
+    # distinct surfaces exist now, and guessing which one would be wrong
+    unqualified = await resolve_merchant("Swiggy")
+    assert unqualified.reach is not Reach.BLOCKED
 
 
 @pytest.mark.asyncio

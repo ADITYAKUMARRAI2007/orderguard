@@ -13,8 +13,8 @@ Not Track 04's D-010 metric set — that reconciles intent, Razorpay order and m
 | **False-match rate** (attack wrongly allowed) | **0%** |
 | False-block rate (correct cart wrongly blocked) | 0% |
 | Duplicate business effects | 0 |
-| Gate evaluation latency, p50 | 0.061 ms |
-| Gate evaluation latency, p95 | 0.241 ms |
+| Gate evaluation latency, p50 | 0.060 ms |
+| Gate evaluation latency, p95 | 0.265 ms |
 
 Latency here is the deterministic decision layer only — comparing a typed cart against a typed intent and running thirteen gates. It excludes the network calls to a merchant or to Razorpay, which this benchmark does not make; those are measured live in `make demo`.
 
@@ -53,3 +53,17 @@ The fixed fifty above proves each attack is caught at least once. This asks a ha
 | 100% | 25 | **0%** | 0% |
 
 Worst false-match rate across every corruption level tested: **0%**.
+
+# Baselines — is independent re-verification actually necessary?
+
+Same fixed-fifty scenario set (D-031), three configurations. The question this answers empirically: is a human confirming what the agent SAYS it did enough, or does the confirmation need to be checked against what the merchant actually recorded?
+
+| Configuration | Unsafe acceptance | Valid acceptance | Amount leaked |
+|---|---:|---:|---:|
+| **no_guard** — Agent proposes a cart; it executes. No check at all. | 100% (37/37) | 100% (13/13) | ₹20,983.73 of ₹20,983.73 exposed |
+| **confirm_only** — Human confirms the agent's own claimed summary. No independent merchant re-read, no gates, no idempotency. | 100% (37/37) | 100% (13/13) | ₹20,983.73 of ₹20,983.73 exposed |
+| **orderguard** — Human confirms -> independent merchant re-read -> 13 deterministic gates -> payment. | 0% (0/37) | 100% (13/13) | ₹0.00 of ₹20,983.73 exposed |
+
+`no_guard` and `confirm_only` score identically on this set — not a coincidence, and not a rigged strawman. Every one of the fixed fifty's attack categories tampers with what the merchant actually has, not with what the agent believes it asked for. Confirming an unverified belief does not verify it.
+`orderguard`'s independent re-read is what changes the answer: 0% unsafe acceptance against 100% for both weaker configurations.
+In real money, over this same scenario set: `no_guard` and `confirm_only` would have let ₹20,983.73 through on carts that did not match what was approved. `orderguard` let through ₹0.00 of that same ₹20,983.73 of exposure.

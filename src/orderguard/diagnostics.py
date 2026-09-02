@@ -22,6 +22,7 @@ from .cart_verifier import CartExpectation, compare_cart
 from .checkout_guard import DEFAULT_AUTHORIZATION_TTL
 from .enums import GateName
 from .models import GateResult, ObservedCart, PurchaseIntent
+from .reason_codes import code_for
 
 __all__ = ["Diagnostic", "diagnose"]
 
@@ -40,6 +41,7 @@ class Diagnostic(BaseModel):
 
     decision: str = "BLOCK"
     reason_code: str
+    code: str = ""      # OG-XXX-NNN short form (reason_codes.py) — set by diagnose()
     message: str
     expected: dict | str | int | None = None
     actual: dict | str | int | None = None
@@ -187,5 +189,5 @@ def diagnose(
             continue
         diagnostic = build()
         if diagnostic is not None:
-            out.append(diagnostic)
+            out.append(diagnostic.model_copy(update={"code": code_for(name)}))
     return out

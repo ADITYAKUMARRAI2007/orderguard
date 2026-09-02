@@ -1,0 +1,841 @@
+{
+  "generated_at": "2026-09-02T04:43:16.521320+00:00",
+  "features": [
+    {
+      "feature_id": "13-pre-payment-gates",
+      "feature_name": "13 pre-payment gates",
+      "name": "13 pre-payment gates",
+      "category": "Gates",
+      "description": "Merchant permitted, intent valid, fields complete, cart unique, attributes/quantities/prices/currency match, items available, within cap, confirmation matches, authorization fresh, idempotency free.",
+      "implementing_files/functions": [
+        "src/orderguard/checkout_guard.py",
+        "src/orderguard/enums.py::GateName"
+      ],
+      "implemented_in": "src/orderguard/checkout_guard.py, src/orderguard/enums.py::GateName",
+      "tests": [
+        "tests/test_checkout_guard.py",
+        "tests/test_payment_flow.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "9-post-payment-gates",
+      "feature_name": "9 post-payment gates",
+      "name": "9 post-payment gates",
+      "category": "Gates",
+      "description": "Payment captured, no refund, amount/currency match, single candidate, correlation, order repairable, not expired, no prior effect.",
+      "implementing_files/functions": [
+        "src/orderguard/enums.py::GateName"
+      ],
+      "implemented_in": "src/orderguard/enums.py::GateName",
+      "tests": [
+        "tests/test_checkout_guard.py",
+        "tests/test_payment_flow.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "toctou-safe-authorization-freshness",
+      "feature_name": "TOCTOU-safe authorization freshness",
+      "name": "TOCTOU-safe authorization freshness",
+      "category": "Gates",
+      "description": "A stale signed Authorization is rejected by G_AUTHORIZATION_FRESH even if every other check passes.",
+      "implementing_files/functions": [
+        "src/orderguard/checkout_guard.py"
+      ],
+      "implemented_in": "src/orderguard/checkout_guard.py",
+      "tests": [
+        "tests/test_checkout_guard.py",
+        "tests/test_payment_flow.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "decision-council-bounded-multi-agent-recommendation",
+      "feature_name": "Decision Council (bounded multi-agent recommendation)",
+      "name": "Decision Council (bounded multi-agent recommendation)",
+      "category": "Decision Council",
+      "description": "Filter -> Fit -> Critic -> code veto. Advisory only; never selects an offer or writes a cart. Falls back to a deterministic top-ranked survivor if the LLM proposes an ID that was never offered to it.",
+      "implementing_files/functions": [
+        "src/orderguard/decision_council.py"
+      ],
+      "implemented_in": "src/orderguard/decision_council.py",
+      "tests": [
+        "tests/test_decision_council.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "signed-authorization-ed25519",
+      "feature_name": "Signed Authorization (Ed25519)",
+      "name": "Signed Authorization (Ed25519)",
+      "category": "Payment",
+      "description": "Frozen, signed artifact issued once a cart passes every pre-payment gate; independently re-verifiable from its own bytes.",
+      "implementing_files/functions": [
+        "src/orderguard/authorization.py"
+      ],
+      "implemented_in": "src/orderguard/authorization.py",
+      "tests": [
+        "tests/test_authorization.py",
+        "tests/test_ledger.py",
+        "tests/test_payment_flow.py",
+        "tests/test_webhooks.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "idempotency-ledger",
+      "feature_name": "Idempotency ledger",
+      "name": "Idempotency ledger",
+      "category": "Payment",
+      "description": "UNIQUE-constraint-backed; one business effect however many times a call is retried.",
+      "implementing_files/functions": [
+        "src/orderguard/ledger.py"
+      ],
+      "implemented_in": "src/orderguard/ledger.py",
+      "tests": [
+        "tests/test_authorization.py",
+        "tests/test_ledger.py",
+        "tests/test_payment_flow.py",
+        "tests/test_webhooks.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "payment-unknown-webhook-reconciliation",
+      "feature_name": "PAYMENT_UNKNOWN + webhook reconciliation",
+      "name": "PAYMENT_UNKNOWN + webhook reconciliation",
+      "category": "Payment",
+      "description": "A lost payment response is marked UNKNOWN, never silently treated as failed or captured; resolved via receipt lookup or a real webhook delivery, HMAC-verified, deduplicated by x-razorpay-event-id.",
+      "implementing_files/functions": [
+        "src/orderguard/webhooks.py",
+        "src/orderguard/ledger.py::LedgerStatus.UNKNOWN"
+      ],
+      "implemented_in": "src/orderguard/webhooks.py, src/orderguard/ledger.py::LedgerStatus.UNKNOWN",
+      "tests": [
+        "tests/test_authorization.py",
+        "tests/test_ledger.py",
+        "tests/test_payment_flow.py",
+        "tests/test_webhooks.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "real-razorpay-integration-test-mode",
+      "feature_name": "Real Razorpay integration (test mode)",
+      "name": "Real Razorpay integration (test mode)",
+      "category": "Payment",
+      "description": "Order creation, checkout, constant-time signature verification, independent fetch.",
+      "implementing_files/functions": [
+        "src/orderguard/razorpay_client.py"
+      ],
+      "implemented_in": "src/orderguard/razorpay_client.py",
+      "tests": [
+        "tests/test_authorization.py",
+        "tests/test_ledger.py",
+        "tests/test_payment_flow.py",
+        "tests/test_webhooks.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "tamper-evident-audit-chain",
+      "feature_name": "Tamper-evident audit chain",
+      "name": "Tamper-evident audit chain",
+      "category": "Audit",
+      "description": "Hash-chained (sha256(prev_hash || canonical_json(payload))); verify_chain recomputes every hash from stored content rather than trusting it. Refusals recorded with the same weight as actions.",
+      "implementing_files/functions": [
+        "src/orderguard/audit.py"
+      ],
+      "implemented_in": "src/orderguard/audit.py",
+      "tests": [
+        "tests/test_audit.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "connector-evidence-capability-directory",
+      "feature_name": "Connector evidence/capability directory",
+      "name": "Connector evidence/capability directory",
+      "category": "Connectors",
+      "description": "Every known commerce surface, its evidence tier (direct/connector-verified, available-untested, restricted, unavailable) and capability (cart-mutable vs. discovery-only), independent of each other.",
+      "implementing_files/functions": [
+        "src/orderguard/connectors.py"
+      ],
+      "implemented_in": "src/orderguard/connectors.py",
+      "tests": [
+        "tests/test_connectors.py",
+        "tests/test_merchants.py",
+        "tests/test_shopify_mcp.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "connector-backend-type-classification",
+      "feature_name": "Connector backend-type classification",
+      "name": "Connector backend-type classification",
+      "category": "Connectors",
+      "description": "Distinguishes a real independently-reachable remote MCP endpoint from one that only exists inside Claude's own consumer app directory -- the exact conflation an external review caught.",
+      "implementing_files/functions": [
+        "src/orderguard/connectors.py::ConnectorBackendType"
+      ],
+      "implemented_in": "src/orderguard/connectors.py::ConnectorBackendType",
+      "tests": [
+        "tests/test_connectors.py",
+        "tests/test_merchants.py",
+        "tests/test_shopify_mcp.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "merchant-reach-resolution",
+      "feature_name": "Merchant reach resolution",
+      "name": "Merchant reach resolution",
+      "category": "Connectors",
+      "description": "Shoppable / blocked-by-policy / not-reachable / unknown, with the reason stated -- never silently defaults to a web search.",
+      "implementing_files/functions": [
+        "src/orderguard/merchants.py"
+      ],
+      "implemented_in": "src/orderguard/merchants.py",
+      "tests": [
+        "tests/test_connectors.py",
+        "tests/test_merchants.py",
+        "tests/test_shopify_mcp.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "real-shopify-storefront-mcp-integration",
+      "feature_name": "Real Shopify Storefront MCP integration",
+      "name": "Real Shopify Storefront MCP integration",
+      "category": "Connectors",
+      "description": "No key needed; live-verified against real stores' /api/mcp endpoints.",
+      "implementing_files/functions": [
+        "src/orderguard/commerce/shopify_mcp.py"
+      ],
+      "implemented_in": "src/orderguard/commerce/shopify_mcp.py",
+      "tests": [
+        "tests/test_connectors.py",
+        "tests/test_merchants.py",
+        "tests/test_shopify_mcp.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "swiggy-instamart-food-live-proof-via-a-claude-session",
+      "feature_name": "Swiggy Instamart/Food live proof (via a Claude session)",
+      "name": "Swiggy Instamart/Food live proof (via a Claude session)",
+      "category": "Connectors",
+      "description": "Real search -> record_intent -> check_cart round trip, both allow and block cases, landing in the real audit chain.",
+      "implementing_files/functions": [
+        "docs/CONNECTORS.md"
+      ],
+      "implemented_in": "docs/CONNECTORS.md",
+      "tests": [
+        "tests/test_connectors.py",
+        "tests/test_merchants.py",
+        "tests/test_shopify_mcp.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "fixed-fifty-benchmark",
+      "feature_name": "Fixed-fifty benchmark",
+      "name": "Fixed-fifty benchmark",
+      "category": "Eval",
+      "description": "50 reproducible scenarios across 13 attack categories, run against this repo's own production gate code.",
+      "implementing_files/functions": [
+        "src/orderguard/benchmark.py"
+      ],
+      "implemented_in": "src/orderguard/benchmark.py",
+      "tests": [
+        "tests/test_benchmark.py",
+        "tests/test_attack_lab.py",
+        "tests/test_eval_script.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "hostile-attack-lab",
+      "feature_name": "Hostile Attack Lab",
+      "name": "Hostile Attack Lab",
+      "category": "Eval",
+      "description": "Prompt injection, salami-slicing, lost-payment-response, Decision Council hallucination -- kept separate from the fixed fifty so the cited count never drifts.",
+      "implementing_files/functions": [
+        "src/orderguard/benchmark.py::run_attack_lab"
+      ],
+      "implemented_in": "src/orderguard/benchmark.py::run_attack_lab",
+      "tests": [
+        "tests/test_benchmark.py",
+        "tests/test_attack_lab.py",
+        "tests/test_eval_script.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "injection-rate-curve",
+      "feature_name": "Injection-rate curve",
+      "name": "Injection-rate curve",
+      "category": "Eval",
+      "description": "False-match/false-block rate as the corruption rate varies from 0% to 100%, seeded and reproducible.",
+      "implementing_files/functions": [
+        "src/orderguard/benchmark.py::run_injection_curve"
+      ],
+      "implemented_in": "src/orderguard/benchmark.py::run_injection_curve",
+      "tests": [
+        "tests/test_benchmark.py",
+        "tests/test_attack_lab.py",
+        "tests/test_eval_script.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "baseline-comparison",
+      "feature_name": "Baseline comparison",
+      "name": "Baseline comparison",
+      "category": "Eval",
+      "description": "No-guard / confirm-only / OrderGuard, over the same scenario set -- answers whether independent re-verification is actually necessary.",
+      "implementing_files/functions": [
+        "src/orderguard/benchmark.py::run_baselines"
+      ],
+      "implemented_in": "src/orderguard/benchmark.py::run_baselines",
+      "tests": [
+        "tests/test_benchmark.py",
+        "tests/test_attack_lab.py",
+        "tests/test_eval_script.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "make-eval-artifact-pipeline",
+      "feature_name": "make eval artifact pipeline",
+      "name": "make eval artifact pipeline",
+      "category": "Eval",
+      "description": "The only writer of results/latest.json and docs/BENCHMARK.md; exits non-zero if any false-match rate is nonzero.",
+      "implementing_files/functions": [
+        "scripts/eval.py"
+      ],
+      "implemented_in": "scripts/eval.py",
+      "tests": [
+        "tests/test_benchmark.py",
+        "tests/test_attack_lab.py",
+        "tests/test_eval_script.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "reason-codes",
+      "feature_name": "Reason codes",
+      "name": "Reason codes",
+      "category": "Eval",
+      "description": "OG-XXX-NNN structured codes for every gate refusal.",
+      "implementing_files/functions": [
+        "src/orderguard/reason_codes.py"
+      ],
+      "implemented_in": "src/orderguard/reason_codes.py",
+      "tests": [
+        "tests/test_benchmark.py",
+        "tests/test_attack_lab.py",
+        "tests/test_eval_script.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "orderguard-as-an-mcp-server",
+      "feature_name": "OrderGuard as an MCP server",
+      "name": "OrderGuard as an MCP server",
+      "category": "MCP",
+      "description": "record_intent, check_cart, verify_audit_trail, recommend_connector, list_verified_connectors -- usable by any external assistant holding any connector's cart.",
+      "implementing_files/functions": [
+        "src/orderguard/mcp_server.py"
+      ],
+      "implemented_in": "src/orderguard/mcp_server.py",
+      "tests": [
+        "tests/test_mcp_server.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "dual-agent-runtime-api-subscription",
+      "feature_name": "Dual agent runtime (API + subscription)",
+      "name": "Dual agent runtime (API + subscription)",
+      "category": "Agent orchestrator",
+      "description": "AnthropicApiRuntime (Messages API MCP Connector beta) and SubscriptionAgentRuntime (Claude Agent SDK) share one AgentTurnResult shape; verified directly against each runtime's current docs to differ in wire format on purpose, not by oversight. Subscription path live-verified 2026-08-31: a real mission through the browser UI resolved a real address, called the real Swiggy Instamart search_products tool, and returned 33 real offers. AnthropicApiRuntime remains offline-tested only -- no real ANTHROPIC_API_KEY has been exercised end-to-end.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/runtime/"
+      ],
+      "implemented_in": "src/orderguard/agent/runtime/",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": true,
+      "evidence": "Live-verified 2026-08-31: a real mission through the browser UI (subscription runtime) resolved a real saved address, called the real Swiggy Instamart search_products tool, and returned 33 real offers -- see docs/CONNECTORS.md.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "r3-financial-tool-exclusion",
+      "feature_name": "R3 (financial) tool exclusion",
+      "name": "R3 (financial) tool exclusion",
+      "category": "Agent orchestrator",
+      "description": "A payment-capable tool can never enter either runtime's tool list -- enforced once, at the one function both adapters call, not per-runtime.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/tools.py"
+      ],
+      "implemented_in": "src/orderguard/agent/tools.py",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "universal-connectorresult-model",
+      "feature_name": "Universal ConnectorResult model",
+      "name": "Universal ConnectorResult model",
+      "category": "Agent orchestrator",
+      "description": "A Pydantic discriminated union (commerce/dev-task/calendar/email/task/file/unsupported); only commerce and dev-task are wired to a live connector -- the rest are real, typed, unfilled extension points, not fabricated pipelines.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/results.py"
+      ],
+      "implemented_in": "src/orderguard/agent/results.py",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "connector-eligibility-engine",
+      "feature_name": "Connector eligibility engine",
+      "name": "Connector eligibility engine",
+      "category": "Agent orchestrator",
+      "description": "Deterministic: category match, reachable backend type, not policy-restricted, account connected where required. The LLM only ever picks inside this pre-filtered set.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/eligibility.py"
+      ],
+      "implemented_in": "src/orderguard/agent/eligibility.py",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "universal-action-approval-lifecycle",
+      "feature_name": "Universal action-approval lifecycle",
+      "name": "Universal action-approval lifecycle",
+      "category": "Agent orchestrator",
+      "description": "R0 auto-executes, R1 needs opt-in, R2 needs explicit approval, R3 never enters this lifecycle at all -- structurally routed to the existing payment path instead.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/lifecycle.py"
+      ],
+      "implemented_in": "src/orderguard/agent/lifecycle.py",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "commerce-missions",
+      "feature_name": "Commerce Missions",
+      "name": "Commerce Missions",
+      "category": "Agent orchestrator",
+      "description": "Multi-intent decomposition; every intent independently risk-governed; only a financial sub-transaction is ever OrderGuard-authorized, never a merged global authorization.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/missions.py"
+      ],
+      "implemented_in": "src/orderguard/agent/missions.py",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "encrypted-connector-credential-store",
+      "feature_name": "Encrypted connector credential store",
+      "name": "Encrypted connector credential store",
+      "category": "Agent orchestrator",
+      "description": "Fernet-encrypted bearer tokens, owner-scoped (LOCAL_SINGLE_USER today; not process-global by construction), shared by both runtimes.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/connector_accounts.py"
+      ],
+      "implemented_in": "src/orderguard/agent/connector_accounts.py",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "real-swiggy-backend-oauth-developer-flow",
+      "feature_name": "Real Swiggy backend OAuth (Developer flow)",
+      "name": "Real Swiggy backend OAuth (Developer flow)",
+      "category": "Agent orchestrator",
+      "description": "OAuth 2.1 + PKCE + RFC 7591 dynamic client registration, confirmed self-serve on localhost directly from Swiggy's own docs. Live-verified 2026-08-31: a real browser OAuth round trip completed against mcp.swiggy.com, the resulting token was encrypted and stored in ConnectorAccount, and the connector immediately showed CONNECTED with no further steps.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/swiggy_oauth.py"
+      ],
+      "implemented_in": "src/orderguard/agent/swiggy_oauth.py",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": true,
+      "evidence": "Live-verified 2026-08-31: a real browser OAuth round trip completed against mcp.swiggy.com; the token was encrypted, stored in ConnectorAccount, and the connector immediately showed CONNECTED.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "github-connector-required-non-commerce-proof",
+      "feature_name": "GitHub connector (required non-commerce proof)",
+      "name": "GitHub connector (required non-commerce proof)",
+      "category": "Agent orchestrator",
+      "description": "Chosen because it needs only a personal access token, not an OAuth app -- the fastest real path to a second, genuinely different connector.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/connector_registry.py"
+      ],
+      "implemented_in": "src/orderguard/agent/connector_registry.py",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "IMPLEMENTED_UNVERIFIED",
+      "live_verified": false,
+      "evidence": "Offline implementation only; current live credential proof is pending.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "ssrf-hardened-custom-connectors",
+      "feature_name": "SSRF-hardened custom connectors",
+      "name": "SSRF-hardened custom connectors",
+      "category": "Agent orchestrator",
+      "description": "HTTPS-only, private/loopback/link-local IP rejection, cross-host redirect rejection, re-resolved on every call (not just at registration) to close the DNS-rebinding gap; discovered tools stored disabled until explicitly enabled with a non-R3 risk tier.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/custom_connectors.py",
+        "src/orderguard/agent/ssrf_guard.py"
+      ],
+      "implemented_in": "src/orderguard/agent/custom_connectors.py, src/orderguard/agent/ssrf_guard.py",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "byok-anthropic-api-key",
+      "feature_name": "BYOK Anthropic API key",
+      "name": "BYOK Anthropic API key",
+      "category": "Agent orchestrator",
+      "description": "In-memory only; never written to disk, logged, or echoed back beyond a masked confirmation. Distinct from the server-managed .env key and the subscription runtime.",
+      "implementing_files/functions": [
+        "src/orderguard/agent/runtime_settings.py"
+      ],
+      "implemented_in": "src/orderguard/agent/runtime_settings.py",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "connector-backend-compatibility-matrix",
+      "feature_name": "Connector backend compatibility matrix",
+      "name": "Connector backend compatibility matrix",
+      "category": "Agent orchestrator",
+      "description": "Every connector classified as REMOTE_MCP / NATIVE_API_ADAPTER / CUSTOM_MCP / CLAUDE_DIRECTORY_ONLY / BROWSER_HANDOFF / UNSUPPORTED before it can be labeled reachable.",
+      "implementing_files/functions": [
+        "src/orderguard/connectors.py::ConnectorBackendType"
+      ],
+      "implemented_in": "src/orderguard/connectors.py::ConnectorBackendType",
+      "tests": [
+        "tests/test_runtime_adapters.py",
+        "tests/test_eligibility.py",
+        "tests/test_orchestrator.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "Evidence / System",
+      "security_relevance": true
+    },
+    {
+      "feature_id": "mission-screen-pipeline-trace",
+      "feature_name": "Mission screen + pipeline trace",
+      "name": "Mission screen + pipeline trace",
+      "category": "UI",
+      "description": "Real-time 3D WebGL mission pipeline (intent -> route -> connector -> tool call -> result), live per-step transparency (the model's own text + call duration, not just a pass/fail), and cross-turn conversation continuity so a reply to the model's own question reaches the same open conversation.",
+      "implementing_files/functions": [
+        "frontend/src/pages/Mission.tsx",
+        "frontend/src/components/PipelineScene.tsx",
+        "frontend/src/components/pipeline/PipelineCanvas.tsx"
+      ],
+      "implemented_in": "frontend/src/pages/Mission.tsx, frontend/src/components/PipelineScene.tsx, frontend/src/components/pipeline/PipelineCanvas.tsx",
+      "tests": [
+        "tests/test_app.py",
+        "tests/test_xss.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "UI",
+      "security_relevance": false
+    },
+    {
+      "feature_id": "shop-screen",
+      "feature_name": "Shop screen",
+      "name": "Shop screen",
+      "category": "UI",
+      "description": "The real FreshCart/Shopify direct-search purchase flow (search -> select -> confirm -> Razorpay checkout), driving the same app.py session endpoints the automated payment tests exercise. The only place in the product a real Razorpay test payment can be completed end to end.",
+      "implementing_files/functions": [
+        "frontend/src/pages/Shop.tsx",
+        "frontend/src/lib/shop.ts"
+      ],
+      "implemented_in": "frontend/src/pages/Shop.tsx, frontend/src/lib/shop.ts",
+      "tests": [
+        "tests/test_app.py",
+        "tests/test_xss.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "UI",
+      "security_relevance": false
+    },
+    {
+      "feature_id": "connectors-screen",
+      "feature_name": "Connectors screen",
+      "name": "Connectors screen",
+      "category": "UI",
+      "description": "Registry cards with live per-connector connect state, runtime settings (including BYOK and a live runtime-mode switch), 'Connected via your Claude account' live detection (claude mcp list, with an explicit loading state for its multi-second health check), and an 'Add Custom MCP' form.",
+      "implementing_files/functions": [
+        "frontend/src/pages/Connectors.tsx"
+      ],
+      "implemented_in": "frontend/src/pages/Connectors.tsx",
+      "tests": [
+        "tests/test_app.py",
+        "tests/test_xss.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "UI",
+      "security_relevance": false
+    },
+    {
+      "feature_id": "attack-lab-screen",
+      "feature_name": "Attack Lab screen",
+      "name": "Attack Lab screen",
+      "category": "UI",
+      "description": "Every number sourced from results/latest.json; no number typed by hand.",
+      "implementing_files/functions": [
+        "frontend/src/pages/AttackLab.tsx"
+      ],
+      "implemented_in": "frontend/src/pages/AttackLab.tsx",
+      "tests": [
+        "tests/test_app.py",
+        "tests/test_xss.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "UI",
+      "security_relevance": false
+    },
+    {
+      "feature_id": "evidence-screen-purchase-receipt",
+      "feature_name": "Evidence screen + purchase receipt",
+      "name": "Evidence screen + purchase receipt",
+      "category": "UI",
+      "description": "Independent audit-chain re-verification, a session lookup, and a full Evidence Receipt (gates, signed authorization, Razorpay ledger state, audit chain -- every field re-verified live, not read from a cached flag).",
+      "implementing_files/functions": [
+        "frontend/src/pages/Evidence.tsx",
+        "frontend/src/components/ReceiptCard.tsx",
+        "src/orderguard/app.py::session_receipt"
+      ],
+      "implemented_in": "frontend/src/pages/Evidence.tsx, frontend/src/components/ReceiptCard.tsx, src/orderguard/app.py::session_receipt",
+      "tests": [
+        "tests/test_app.py",
+        "tests/test_xss.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "UI",
+      "security_relevance": false
+    },
+    {
+      "feature_id": "features-screen",
+      "feature_name": "Features screen",
+      "name": "Features screen",
+      "category": "UI",
+      "description": "Renders this exact feature matrix.",
+      "implementing_files/functions": [
+        "frontend/src/pages/Features.tsx"
+      ],
+      "implemented_in": "frontend/src/pages/Features.tsx",
+      "tests": [
+        "tests/test_app.py",
+        "tests/test_xss.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "UI",
+      "security_relevance": false
+    },
+    {
+      "feature_id": "eval-judge-screen",
+      "feature_name": "Eval / Judge screen",
+      "name": "Eval / Judge screen",
+      "category": "UI",
+      "description": "This repo's own benchmark next to a separate, fresh-context evaluator's report -- never merged into one number.",
+      "implementing_files/functions": [
+        "frontend/src/pages/Eval.tsx"
+      ],
+      "implemented_in": "frontend/src/pages/Eval.tsx",
+      "tests": [
+        "tests/test_app.py",
+        "tests/test_xss.py"
+      ],
+      "status": "VERIFIED_TESTED",
+      "live_verified": false,
+      "evidence": "Covered by the repository test suite; current clean live verification is not claimed.",
+      "user_visible_surface": "UI",
+      "security_relevance": false
+    }
+  ]
+}

@@ -12,8 +12,11 @@ from orderguard.ledger import (
     claim_order,
     finalize_if_pending,
     get_entry,
+    get_entry_by_order_id,
     ledger_engine,
+    mark_unknown,
     reject,
+    resolve_unknown,
 )
 
 
@@ -175,3 +178,74 @@ def test_rejecting_an_already_captured_row_does_not_reopen_it(engine):
 
     final = get_entry(engine, entry.idempotency_key)
     assert final.status is LedgerStatus.CAPTURED     # never moved backwards
+
+
+# --- PAYMENT_UNKNOWN: a create_order call whose outcome is uncertain -------
+
+def test_marking_unknown_moves_a_pending_row_out_of_pending(engine):
+    entry, _ = _claim(engine)
+    mark_unknown(engine, entry.idempotency_key)
+    assert get_entry(engine, entry.idempotency_key).status is LedgerStatus.UNKNOWN
+
+
+def test_marking_unknown_never_reopens_an_already_captured_row(engine):
+    entry, _ = _claim(engine)
+    finalize_if_pending(
+        engine, idempotency_key=entry.idempotency_key,
+        razorpay_payment_id="pay_1", captured_amount_paise=29900,
+    )
+    mark_unknown(engine, entry.idempotency_key)
+    assert get_entry(engine, entry.idempotency_key).status is LedgerStatus.CAPTURED
+
+
+def test_resolving_unknown_as_created_attaches_the_real_order_and_returns_to_pending(engine):
+    entry, _ = _claim(engine)
+    mark_unknown(engine, entry.idempotency_key)
+
+    resolve_unknown(engine, entry.idempotency_key, razorpay_order_id="order_found_late")
+
+    resolved = get_entry(engine, entry.idempotency_key)
+    assert resolved.status is LedgerStatus.PENDING
+    assert resolved.razorpay_order_id == "order_found_late"
+
+
+def test_resolving_unknown_as_not_created_clears_the_way_for_a_real_retry(engine):
+    entry, _ = _claim(engine)
+    mark_unknown(engine, entry.idempotency_key)
+
+    resolve_unknown(engine, entry.idempotency_key, razorpay_order_id=None)
+
+    resolved = get_entry(engine, entry.idempotency_key)
+    assert resolved.status is LedgerStatus.PENDING
+    assert resolved.razorpay_order_id == ""
+
+
+def test_resolving_an_unknown_row_that_was_never_marked_unknown_does_nothing(engine):
+    """resolve_unknown only ever touches rows actually in the UNKNOWN state —
+    it must not be a general-purpose 'reset to pending' escape hatch."""
+    entry, _ = _claim(engine)
+    finalize_if_pending(
+        engine, idempotency_key=entry.idempotency_key,
+        razorpay_payment_id="pay_1", captured_amount_paise=29900,
+    )
+    resolve_unknown(engine, entry.idempotency_key, razorpay_order_id="should_not_attach")
+
+    assert get_entry(engine, entry.idempotency_key).status is LedgerStatus.CAPTURED
+
+
+def test_lookup_by_razorpay_order_id_is_how_a_webhook_finds_its_row(engine):
+    entry, _ = _claim(engine)
+    from sqlmodel import Session, update
+    from orderguard.ledger import LedgerEntry
+    with Session(engine) as db:
+        db.exec(
+            update(LedgerEntry)
+            .where(LedgerEntry.idempotency_key == entry.idempotency_key)
+            .values(razorpay_order_id="order_xyz")
+        )
+        db.commit()
+
+    found = get_entry_by_order_id(engine, "order_xyz")
+    assert found is not None
+    assert found.idempotency_key == entry.idempotency_key
+    assert get_entry_by_order_id(engine, "order_never_seen") is None

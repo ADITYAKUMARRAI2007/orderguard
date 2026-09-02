@@ -4,9 +4,14 @@ version = "0.1.0"
 description = "A commerce agent that verifies what it bought, and proves the store recorded it exactly once."
 requires-python = ">=3.13"
 dependencies = [
+  "anthropic>=0.75",
+  "claude-agent-sdk>=0.1",
+  "cryptography>=50.0.1",
   "fastapi>=0.115",
   "httpx>=0.28",
   "pydantic>=2.10",
+  "sqlalchemy>=2.0.52",
+  "sqlmodel>=0.0.39",
   "uvicorn[standard]>=0.30",
 ]
 

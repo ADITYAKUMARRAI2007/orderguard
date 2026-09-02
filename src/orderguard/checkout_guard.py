@@ -18,9 +18,11 @@ from .models import GateResult, ObservedCart, PurchaseIntent
 
 __all__ = [
     "CheckoutEvidence",
+    "PostPaymentEvidence",
     "ConfirmationResult",
     "confirm_cart",
     "evaluate_pre_payment_gates",
+    "evaluate_post_payment_gates",
     "ready_for_checkout",
     "DEFAULT_AUTHORIZATION_TTL",
 ]
@@ -186,6 +188,78 @@ def evaluate_pre_payment_gates(
         GateName.IDEMPOTENCY_FREE: (
             evidence.idempotency_free,
             "This purchase has already had a successful effect.",
+        ),
+    }
+    return GateResult.from_checks(checks)
+
+
+class PostPaymentEvidence(BaseModel):
+    """Non-LLM facts needed for the nine gates that run after a payment
+    claim comes back. Every field is real evidence gathered by the caller —
+    ``payment.py::verify_payment``'s own frozen 4-step check for
+    ``payment_captured``/``amount_match``/``currency_match``/``correlation``,
+    plus the ledger and Razorpay's own record for the rest. Nothing here is
+    inferred from what a browser or an LLM reported.
+    """
+
+    model_config = STRICT
+
+    payment_captured: bool
+    no_refund: bool
+    amount_match: bool
+    currency_match: bool
+    single_candidate: bool
+    correlation: bool
+    order_repairable: bool
+    not_expired: bool
+    no_prior_effect: bool
+
+
+def evaluate_post_payment_gates(evidence: PostPaymentEvidence) -> GateResult:
+    """Run every post-payment gate and block if a single fact is false.
+
+    Mirrors ``evaluate_pre_payment_gates``: one pure function over typed
+    evidence the caller already gathered, so no gate's outcome can be
+    invented here.
+    """
+    checks: dict[GateName, tuple[bool, str]] = {
+        GateName.PAYMENT_CAPTURED: (
+            evidence.payment_captured,
+            "Razorpay's own record does not say this payment was captured.",
+        ),
+        GateName.NO_REFUND: (
+            evidence.no_refund,
+            "This payment has a refund against it.",
+        ),
+        GateName.AMOUNT_MATCH: (
+            evidence.amount_match,
+            "The captured amount does not match the confirmed cart total.",
+        ),
+        GateName.CURRENCY_MATCH_POST: (
+            evidence.currency_match,
+            "The captured currency does not match the confirmed cart's currency.",
+        ),
+        GateName.SINGLE_CANDIDATE: (
+            evidence.single_candidate,
+            "More than one Razorpay order matched this purchase — refusing "
+            "to guess which one is real.",
+        ),
+        GateName.CORRELATION: (
+            evidence.correlation,
+            "This payment belongs to a different order than the one we created.",
+        ),
+        GateName.ORDER_REPAIRABLE: (
+            evidence.order_repairable,
+            "A lost order response could not be resolved against Razorpay's own record.",
+        ),
+        GateName.NOT_EXPIRED: (
+            evidence.not_expired,
+            "Too long has passed since this purchase was confirmed for the "
+            "payment to still be trusted.",
+        ),
+        GateName.NO_PRIOR_EFFECT: (
+            evidence.no_prior_effect,
+            "This purchase already had a captured effect before this call.",
         ),
     }
     return GateResult.from_checks(checks)

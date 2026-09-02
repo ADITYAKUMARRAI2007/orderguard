@@ -833,3 +833,502 @@ Building this is what surfaced D-036: the first version of a wrong-merchant
   had never actually been firing for that reason.
 Test: tests/test_diagnostics.py, ten cases including one asserting diagnose()
   adds nothing when handed a fabricated GateResult it did not itself produce.
+
+## D-038 — audit.py: implementing a three-day-old promise, not adding a feature
+Date: 2026-08-29
+Context: A cross-check of docs/API_CONTRACTS.md against src/ (prompted by
+  comparing this project's evidence against two direct Track-01 competitors,
+  Sentinel-AP2 and AI Buyer Firewall, both of which ship a real hash-chained
+  audit trail) found #7, AuditEvent, frozen since CP-0 with zero implementation
+  anywhere in the codebase. Recorded as F-030.
+Decision: src/orderguard/audit.py implements the frozen shape exactly —
+  append_event, verify_chain, ChainTampered — and is wired into
+  mcp_server.py so every record_intent and check_cart call, allowed or
+  refused, appends a real event. A new MCP tool, verify_audit_trail, lets any
+  caller recompute every hash independently rather than trusting the stored
+  values.
+Named deliberately "tamper-evident," never "immutable" — a local hash chain
+  proves a retrospective edit happened; it cannot stop someone with direct
+  database access from rewriting every row and hash to match. Claiming more
+  would be the same overclaim this project has argued against since D-000.
+Test: tests/test_audit.py (10 cases) + tests/test_mcp_server.py (5 cases)
+  proving the wiring, not just the module, actually produces a verifiable
+  trail — including a live tamper caught through the MCP tool itself.
+
+## D-039 — a real secret was found in .env.example and scrubbed from history
+Date: 2026-08-29
+Context: Running the five-part secret audit (SECURITY.md) ahead of ever
+  pushing this repo publicly found a real Serper search API key committed in
+  plain text in .env.example, introduced in one historical commit and present
+  at HEAD. Full grep of tracked files and complete git history found no other
+  real secret — only intentionally fake test fixtures (rzp_test_fake,
+  rzp_live_shouldnotbeused).
+Decision: fixed the working tree, then used git filter-repo to replace the
+  literal key value with nothing across every object in every ref. Verified
+  with a full-history grep (0 matches) and git fsck --unreachable (0 dangling
+  commits — the old blob is actually gone, not merely unreferenced). Safe
+  because this repository has never had a remote; nothing external has this
+  history to conflict with. The key itself was never exposed via GitHub, but
+  the user is rotating it at serper.dev regardless, since the same key was
+  separately visible in an earlier screenshot outside this repo.
+Consequence: same 48 commits, same messages, same order — only the tip hash
+  changed, as a mechanical result of rewriting an earlier commit's tree.
+  Repo is now safe to push public; the push itself still requires explicit
+  go-ahead, unchanged from standing policy.
+
+## D-040 — re-read the merchant's cart before payment, not at confirmation
+Date: 2026-08-29
+Context: Tracing create_payment_order (app.py) while auditing the codebase
+  against two independent feature-review passes found F-031:
+  G_CONFIRMATION_MATCHES was run against session.observed_cart, the exact
+  object confirm_session_cart had already hashed. Nothing re-fetched the
+  merchant's cart between confirmation and payment, so the gate could not
+  structurally detect a real merchant-side change — only G_AUTHORIZATION_FRESH
+  (D-035) existed, and that bounds TIME elapsed, not STATE changed. Two
+  different questions; only one had real code behind it.
+Decision: create_payment_order now calls a new _reread_cart_from_merchant(),
+  using the same adapter construction select_offer already uses, and stores
+  the result on session.observed_cart before _pre_payment_gates runs. A
+  merchant that cannot be reached for the re-read fails closed (502), same
+  shape as F-028, rather than falling back to the stale snapshot.
+Test: tests/test_payment_flow.py::test_a_merchant_side_cart_change_after_confirmation_is_blocked_not_paid
+  — confirmed by reverting the fix via git stash and watching the test fail
+  for the right reason (the adapter's second read call never happens at all).
+Downside: one extra network round-trip to the merchant per payment attempt.
+  Correct trade — the alternative is a gate that cannot do the one thing its
+  name says it does.
+
+## D-041 — connector evidence and capability are two fields, not one enum
+Date: 2026-08-29
+Context: connectors.py had one Status enum (LIVE/NEEDS_ACCESS/RESTRICTED/
+  UNAVAILABLE) doing two jobs: how strongly we'd verified a connector, and
+  what it could actually do. That conflation would have hidden a real
+  distinction once Instacart and Uber Eats were both added as "real, in
+  Claude's official directory, untested by us" — identical evidence, but one
+  can hand back an itemized cart and the other structurally cannot.
+Decision: split into Evidence (DIRECT_VERIFIED / CONNECTOR_VERIFIED /
+  AVAILABLE_UNTESTED / RESTRICTED / UNAVAILABLE) and Capability (CART_MUTABLE /
+  DISCOVERY_ONLY / UNKNOWN), independent fields on the same Connector. Added,
+  with evidence checked directly against each connector's own page rather than
+  assumed: Instacart and Order by Cash App (AVAILABLE_UNTESTED, CART_MUTABLE —
+  recommended next live-proof targets) and Uber Eats (AVAILABLE_UNTESTED,
+  DISCOVERY_ONLY — verified via Uber's own help docs that checkout happens in
+  their app, not Claude; ruled OUT as a proof target by this same check).
+Consequence: merchants.py's old Status.LIVE / (NEEDS_ACCESS, RESTRICTED)
+  branches collapsed the old NEEDS_ACCESS and RESTRICTED distinction into one
+  RESTRICTED value — Swiggy and Zomato are now both "restricted", where the
+  detail of WHY (approval queue vs explicit policy refusal) still lives in
+  each connector's evidence_note text, just not as a separate enum tier.
+  Accepted: the nuance survives in prose, which is where the original
+  investigation (F-004, F-009, F-012) actually lives anyway.
+Test: tests/test_connectors.py (17 cases) rewritten around the two fields;
+  test_uber_eats_is_capability_limited_not_just_unverified is the one that
+  would have failed under the old single-enum design.
+
+## D-042 — connector_log.py and recommend_connector: evidence over prose
+Date: 2026-08-29
+Context: mcp_server.py could check any connector's cart but had no memory of
+  WHICH connectors it had actually been checked against, and no way to route
+  a fresh request to a known-good one without an assistant guessing.
+Decision: connector_log.py (new, same SQLModel/SQLite pattern as ledger.py)
+  records every check_cart outcome by merchant. recommend_connector(category)
+  ranks cart-capable connectors from connectors.py by evidence strength, and
+  checks memory.py's existing SavedStore table (remember_store/saved_stores —
+  reused, not reinvented) for a category match that worked before. A
+  successful check_cart call remembers the connector via remember_store, the
+  same "only verified-shoppable things are saved" bar memory.py already
+  enforces everywhere else. Deliberately did NOT use memory.py's Preference
+  table — its _ALLOWED_KEYS is a closed set on purpose ("a preference cannot
+  grow into a permission"), and "connector:category" was rightly rejected by
+  it on first attempt. SavedStore was the correct existing tool, not a reason
+  to widen the closed list.
+Test: tests/test_connector_log.py (5 cases) + 7 new cases in
+  tests/test_mcp_server.py, including one proving an unrecognised merchant
+  teaches the system nothing about its category (no false learning from
+  domains outside the directory).
+
+## D-043 — Decision Council: two advisory agents, one unconditional code veto
+Date: 2026-08-29
+Context: search.py's rank() sorts every offer but never drops a disqualified
+  one, and its own docstring is explicit that "picking is the user's" — the
+  ask was for AI reasoning about which candidate best fits soft preferences
+  without moving that line. Separately, chosen deliberately NOT to build the
+  fuller "full LLM-vs-LLM negotiation across merchants" (Bazaar) version
+  discussed earlier in this project: that would let agents argue about where
+  money goes, which is the exact authority this project exists to keep away
+  from models. Decision Council recommends which of the user's OWN already-
+  found, already-filtered candidates to add to a cart; the user still adds it.
+Decision: decision_council.py — filter_eligible() actually drops (not
+  reorders) anything failing in_stock/priced/within_budget, with tri-state
+  handling: within_budget=None (unresolved) is excluded, same as False, never
+  silently treated as safe. Two role-scoped LLMProvider.complete() calls (Fit,
+  then Critic) reason only over real ScoredOffer fields — price, relevance,
+  stock. No delivery estimate or rating is invented; Offer carries neither,
+  and fabricating one would be the exact overclaim search.py's own docstring
+  already argues against for trust scores.
+  Structural restriction: each call's JSON schema has candidate_id as an enum
+  of the actual eligible ids for that request, not a free string validated
+  after the fact — the model is asked to choose only from what's real.
+  Code veto, unconditional: any id outside that set, from either agent, or any
+  LLMUnavailable/malformed response, discards the recommendation and falls
+  back to the deterministic top-ranked eligible candidate. fallback_used
+  reports this explicitly rather than smoothing it into a normal-looking
+  result. Wired live into app.py's item-search endpoint (ItemSearch.council)
+  — advisory only, never selects an offer or writes a cart.
+Test: tests/test_decision_council.py (13 cases, including both hallucination
+  paths and an unavailable-model path) + a live integration test in
+  test_app.py proving the council actually runs inside a real search response
+  and falls back safely when the wired model has nothing usable to say.
+
+## D-044 — signed Authorization: immutable payload, separate consumption
+Date: 2026-08-29
+Context: wraps what already exists — confirmed_cart_hash (D-004), the 15-
+  minute freshness window (D-035), the ledger's UNIQUE-constraint single-use
+  guarantee — in one signed, independently verifiable artifact. An earlier
+  draft put a mutable `consumed` flag inside the signed payload; any field
+  inside a signed payload that changes after issuance invalidates the
+  signature protecting it, so that draft was wrong before it was built.
+Decision: authorization.py — Authorization is a frozen (extra="forbid",
+  frozen=True) pydantic model, Ed25519-signed over every field except
+  signature itself via canonical_json (reused from audit.py, so the same
+  determinism guarantee applies). Consumption lives entirely separately, in
+  AuthorizationConsumption, a one-table SQLModel store using the exact
+  claim_order pattern from ledger.py (UNIQUE constraint on authorization_id,
+  INSERT races resolved by the database, not application logic).
+  Explicitly labeled "AP2-inspired", never "AP2 compliant" — AP2 v0.2's own
+  Checkout Mandate binding favours a non-deterministic ECDSA-style signature
+  over Ed25519; this is deliberately our own artifact, not a claim of spec
+  conformance.
+  Wired live: app.py issues one Authorization per idempotency key, inside
+  create_payment_order, right after the fresh F-031 re-read passes all 13
+  gates — audit_tip is the real AuditEvent.entry_hash from the SAME chain
+  mcp_server.py writes to (literally the same imported AUDIT object, not a
+  second engine pointed at the same file by coincidence). Consumed exactly
+  once, inside verify_session_payment's existing `won` branch, the same
+  atomic guarantee that already governs order history writes.
+  SIGNING_KEY is a module-level constant, loaded once, passed explicitly into
+  issue_authorization rather than left to its own default — this is what
+  lets tests substitute an ephemeral key instead of writing to the real
+  data/authorization_signing_key.pem file on every test run.
+Test: tests/test_authorization.py (14 cases: signature tampering across
+  every field, frozen-model enforcement, expiry at the shared TTL, and the
+  70-duplicate-consumption property mirrored from the ledger's own test) +
+  3 new cases in test_payment_flow.py proving the live wiring — a real
+  session's authorization actually verifies against the real signing key,
+  survives a duplicate order call unchanged, and gets consumed exactly once
+  across 70 duplicate verify calls.
+
+## D-045 — PAYMENT_UNKNOWN: a lost response is neither success nor failure
+Date: 2026-08-29
+Context: LedgerStatus had only PENDING/CAPTURED/REJECTED. A timeout or
+  dropped connection during create_order left no way to distinguish "Razorpay
+  never got the request" from "Razorpay made the order and the response got
+  lost" — the old code treated any RazorpayError as a clean failure and
+  raised 502, with nothing stopping a client retry from creating a second
+  real order if the first request had actually succeeded.
+Decision: LedgerStatus gains UNKNOWN — reachable only from PENDING, resolved
+  only by asking Razorpay directly, never by guessing or blind retry.
+  Resolution uses Razorpay's `receipt` field (max 40 chars, GET
+  /v1/orders?receipt=...) rather than `notes` — chosen because
+  create_payment_order already passes receipt=<idempotency_key> today, so
+  this needed a lookup method, not new plumbing (razorpay_client.py:
+  find_order_by_receipt). A resolution that finds a real order returns the
+  row to PENDING with that order attached, indistinguishable from a normal
+  successful create_order; a resolution that finds nothing also returns to
+  PENDING, but with no order attached, so the next call is free to actually
+  retry. If even the resolution attempt fails, the row stays UNKNOWN and the
+  caller is told the truth (502, still uncertain) rather than a false success.
+Test: 5 new cases in tests/test_ledger.py (state transitions) +
+  4 new cases in tests/test_razorpay_client.py (receipt lookup, mocked at the
+  httpx transport level, no network) + 3 live integration tests in
+  test_payment_flow.py covering all three real outcomes: lost-but-created,
+  lost-and-genuinely-never-created (with a real retry succeeding after), and
+  the honest case where even resolution cannot reach Razorpay.
+
+## D-046 — a Razorpay webhook receiver, converging on the same finalize path
+Date: 2026-08-29
+Context: grep confirmed no webhook endpoint existed — payment truth depended
+  entirely on the browser completing a redirect back to this app, which is
+  exactly the channel Razorpay's own docs say cannot be trusted alone
+  (deliveries can be delayed, lost, or arrive out of order independent of
+  whatever the browser does).
+Decision: webhooks.py verifies HMAC-SHA256 over the RAW body first, before
+  anything is parsed or looked up — same signature-before-network-call
+  ordering payment.py already uses. A duplicate x-razorpay-event-id (real,
+  documented Razorpay header) is treated as a no-op success, not an error —
+  Razorpay's own docs say duplicate and out-of-order delivery are expected,
+  and treating an expected case as a security failure would be a self-
+  inflicted false positive. Only invalid signature, unparseable payload, or
+  an order id that correlates to nothing in the ledger is actually rejected.
+  verify_session_payment's `won` branch (order history + authorization
+  consumption) was refactored into a shared _finalize_capture(), called from
+  BOTH the client-driven path and the webhook path — so whichever channel
+  reports capture first is the one that runs the side effects, and the other
+  correctly sees "already captured" instead of silently missing them. A
+  session is located by scanning _SESSIONS for a matching Razorpay order id
+  (_find_session_by_order_id) — if none is found (session expired from
+  memory, or the process restarted), the LEDGER — the source of payment
+  truth — is still finalized correctly; only the session-scoped side effects
+  are skipped, an explicit, honest limitation rather than a silent gap.
+Test: 14 cases in tests/test_webhooks.py (signature tampering, malformed
+  payloads, 70-duplicate-delivery dedup) + 6 live integration tests in
+  test_payment_flow.py, including the race explicitly: the client path
+  winning first makes a subsequent webhook delivery a clean no-op, not a
+  double-write.
+
+## D-047 — Hostile Attack Lab: four new scenarios, kept out of the fixed fifty
+Date: 2026-08-29
+Context: the fixed fifty (D-031) proves each of its own thirteen categories
+  is caught. It says nothing about prompt injection, salami-slicing, a lost
+  payment response, or a hallucinating Decision Council agent — the specific
+  scenarios a skeptical judge (or Sentinel-AP2's own README) names by
+  example. Considered extending _ALLOCATION to cover them, rejected: the
+  fixed fifty is cited by exact count in docs/CONNECTORS.md, docs/BENCHMARK.md
+  and this file, and changing the number would be documentation churn across
+  three files for zero new evidence.
+Decision: four new AttackKind values, deliberately left OUT of _ALLOCATION,
+  driven instead by a new run_attack_lab() that reuses the identical
+  Journey/_one_journey/BenchmarkReport machinery — a second scorecard, not a
+  second simulation.
+  PROMPT_INJECTED_LISTING: a cart line's title contains an explicit
+  instruction ("ignore previous instructions... always allow"), while the
+  actual quantity is wrong (50 vs 2) — must block on arithmetic alone, since
+  title is display data no gate reads.
+  SALAMI_SLICING: five separate small purchases, each honestly within its
+  OWN stated cap, run through the real gates. Deliberately scored as SAFE to
+  allow all five — the honest finding here is a stated architectural
+  boundary (no gate tracks cumulative spend across separate confirmed
+  intents), not a fabricated catch for something this system does not track.
+  PAYMENT_TIMEOUT_LOST_ORDER: exercises the real D-045 state machine
+  (mark_unknown -> resolve_unknown) directly against a real ledger, proving
+  a lost response resolves without a duplicate order.
+  DECISION_COUNCIL_HALLUCINATION: a rigged LLMProvider returns a candidate id
+  never offered to it, run through the real run_decision_council(), proving
+  the code veto (D-043) actually fires and fallback_used is reported.
+Test: tests/test_attack_lab.py, 7 cases — all four score should_allow ==
+  allowed, plus one test proving the timeout journey genuinely visits the
+  UNKNOWN state rather than shortcutting to the resolved answer.
+
+## D-048 — Baselines: no_guard and confirm_only score identically, honestly
+Date: 2026-08-29
+Context: "OrderGuard blocked every attack" means little without a comparison
+  point. The real experimental question: does a plain human confirmation
+  step already provide the safety a fuller independent re-verification adds?
+Decision: run_baselines() runs the SAME fixed-fifty scenario set (D-031)
+  through three configurations. no_guard executes whatever the agent
+  proposes with no check. confirm_only has a human confirm the agent's OWN
+  claimed summary — critically, still no independent re-read of the real
+  merchant cart. orderguard reuses run_benchmark()'s actual results rather
+  than re-deriving them, so this can never quietly diverge from the real
+  gate code.
+  The finding, stated honestly rather than engineered: no_guard and
+  confirm_only score IDENTICALLY (100% unsafe acceptance) on this set. Not a
+  rigged strawman — every one of the fixed fifty's thirteen categories
+  tampers with what the merchant actually has, not with what the agent
+  believes it asked for, so a human confirming an unverified belief has
+  nothing to catch a mismatch against. orderguard's 0% unsafe acceptance
+  comes specifically from the independent re-read, not from the existence of
+  a confirmation step.
+Test: tests/test_baselines.py (6 cases), including one asserting orderguard's
+  numbers are read FROM run_benchmark()'s own report, never recomputed
+  separately in a way that could drift from the real gates.
+
+## D-049 — `make eval` writes results/latest.json; a number is never hand-typed
+Date: 2026-08-29
+Context: the existing `make benchmark` wrote docs/BENCHMARK.md but no
+  machine-readable artifact — any UI or README claim had to either hardcode a
+  number or re-run the benchmark itself, both of which drift silently from
+  what was last actually measured.
+Decision: scripts/eval.py runs all four evidence sources in one process —
+  the fixed fifty, the injection curve, the Hostile Attack Lab, and the three
+  baselines — and writes BOTH docs/BENCHMARK.md and results/latest.json.
+  results/ is intentionally not gitignored: like docs/BENCHMARK.md, it is a
+  real evidence artifact meant to be committed and inspected, not transient
+  state (unlike data/, which is). No model calls, no network — same offline
+  rule the test suite already enforces. Exit code is nonzero if any of the
+  three rates that must be zero (fixed-fifty, curve, attack-lab false-match
+  rates) is ever nonzero, so this can gate CI later.
+Test: tests/test_eval_script.py runs the actual script as a subprocess (the
+  same command `make eval` runs, not an import of internals) and asserts the
+  real written JSON has the right shape and the right numbers.
+
+## D-050 — Reason codes: OG-XXX-NNN mapped onto every frozen gate
+Date: 2026-08-29
+Context: GateName (G_QUANTITIES_MATCH, etc.) is precise but verbose, and
+  nothing in the codebase gave a failure a short, stable, quotable identifier.
+Decision: reason_codes.py maps all 22 frozen gates (docs/GATES.md) to a short
+  code, grouped by what KIND of fact each is about (ID-, QTY-, FIN-, AUTH-,
+  STATE-, PAY-) rather than by pre/post-payment — a judge asking to see every
+  financial mismatch wants FIN-* together regardless of which side of payment
+  it's on. Enforced by assertion at import time: every GateName has exactly
+  one code, no two gates share one. Three EXTRA_CODES cover real,
+  already-built failure modes that aren't gates: signature verification
+  (payment.py), webhook dedup (webhooks.py), PAYMENT_UNKNOWN (D-045).
+  Wired into diagnostics.py: every Diagnostic now carries `code` alongside
+  the existing `reason_code` (which stays the GateName string — unchanged,
+  since existing tests key off it) — set centrally in diagnose()'s assembly
+  loop via code_for(), not duplicated across each of the seven diagnostic
+  builder functions.
+Test: tests/test_reason_codes.py (7 cases: full coverage, uniqueness, shape,
+  both GateName and string lookup forms, graceful degradation on an unknown
+  name) + 2 new cases in test_diagnostics.py proving real diagnose() output
+  actually carries a non-empty code.
+
+## D-051 — three-screen UI (BUY / ATTACK LAB / EVIDENCE), verified live
+Date: 2026-08-29
+Context: web/ was a single, already well-built, already-responsive BUY page.
+  The plan called for a genuine three-screen product: BUY (existing),
+  ATTACK LAB (what happens when the agent goes wrong), EVIDENCE (why a
+  transaction was allowed or blocked).
+Decision: kept the existing BUY page entirely — it already had real mobile
+  breakpoints and a working conversation flow. Added a shared nav (topnav) to
+  app.css. Attack Lab (web/attack-lab.html + .js) reads /api/eval-results,
+  a new endpoint that serves results/latest.json verbatim — the same file
+  make eval writes, so this page can never show a number the real benchmark
+  didn't produce. Evidence (web/evidence.html + .js) adds two new endpoints:
+  /api/audit/verify (wraps audit.verify_chain — the same function
+  mcp_server.py's MCP tool already exposes, now also as plain REST) and
+  /api/sessions/{id}/authorization/verify (wraps authorization.verify_authorization,
+  re-checking the Ed25519 signature from its own bytes, never trusting a
+  stored flag).
+  Verified live in the browser, not just asserted by tests (see F-032, found
+  during this exact verification pass): real search against slurrpfarm.com,
+  real selection, real confirmation, a real Razorpay test order created
+  (13/13 gates), a real signed Authorization shown and independently
+  re-verified on the Evidence screen, and a real 6-event tamper-evident audit
+  chain — one continuous click path, screenshotted at both desktop and
+  mobile widths for all three screens.
+Test: 3 new cases in test_app.py for the two evidence endpoints (honest
+  "not yet generated" state, healthy chain, detected tamper). The three-
+  screen wiring itself is verified live per F-032's lesson, not by a browser
+  automation test in the suite.
+
+## D-052 — Swiggy: RESTRICTED to CONNECTOR_VERIFIED, via a different mechanism than Zomato
+Date: 2026-08-29
+Context: connectors.py had Swiggy as one RESTRICTED entry (401, no
+  credentials — access via Builders Club approval). The user connected all
+  three Swiggy MCP servers (Food, Instamart, Dineout) directly to this coding
+  session via `claude mcp add --transport http` + OAuth completed in their
+  own terminal. Swiggy's own docs (fetched and checked, not assumed) document
+  client configs for Claude Desktop/ChatGPT/Cursor/VS Code/Windsurf — not
+  Claude Code by name — so this used Claude Code's native remote-HTTP+OAuth
+  path instead: the same MCP mechanism, unlisted-but-working, confirmed by
+  doing it rather than guessing either way it would go.
+Decision: split the single "swiggy" entry into three (swiggy-instamart,
+  swiggy-food, swiggy-dineout) — they are three separate MCP servers with
+  three separate OAuth grants, not one connector. Instamart and Food are
+  CONNECTOR_VERIFIED/CART_MUTABLE, each with a real record_intent -> check_cart
+  round trip (Instamart additionally proving the tamper/block case: 20 units
+  against an approved 2, blocked on three gates at once). Dineout is
+  CONNECTOR_VERIFIED (authentication genuinely works) but capability stays
+  DISCOVERY_ONLY — search_restaurants_dineout returned an empty result across
+  three different real queries, recorded as what actually happened rather
+  than assumed to be a fluke or upgraded on the strength of auth alone.
+  This is the second live proof of "check_cart is connector-agnostic",
+  through a genuinely different mechanism than the first (a person's own
+  Claude session for Zomato, vs. this coding session's own MCP connection for
+  Swiggy) — closing the gap docs/CONNECTORS.md had explicitly left open.
+  merchants.py's BLOCKED-reach note text updated: it no longer describes an
+  access process that no longer applies, and instead tells a user of this
+  app's own conversational search where Swiggy actually IS reachable now —
+  through their own connected Claude session, not through this app's direct
+  adapters.
+Test: tests/test_connectors.py rewritten around the three new ids;
+  tests/test_app.py and tests/test_merchants.py updated — the merchants.py
+  fix surfaced a real, correct behavior change: a bare "Swiggy" no longer
+  resolves to exactly one connector (three real, distinct surfaces exist),
+  so it now correctly falls through to NOT_REACHABLE rather than guessing
+  which one was meant.
+
+## D-053 — Server-side agent orchestrator: dual runtime, universal routing, R3 excluded by construction
+Date: 2026-08-31
+Context: everything Swiggy-related up to D-052 happened in this coding
+  session holding an MCP connection — never inside the running product.
+  The product's own web UI had zero connection to any LLM. The ask (after
+  three rounds of external review, each verified against Anthropic's and
+  Swiggy's actual current docs rather than taken on faith) was a real
+  server-side orchestrator: the product itself picks a connector, drives an
+  LLM against it, and hands the result to this repo's existing, unmodified
+  verification stack.
+Two facts changed the design mid-plan, both verified directly rather than
+  assumed:
+  1. The Agent SDK's `mcp_servers` (dict, `{"type":"http","url":...,
+     "headers":{...}}`, tools allow-listed as `mcp__server__tool`) is a
+     genuinely different wire shape from the Messages API MCP Connector's
+     (`mcp_servers` list + `mcp_toolset` block). A `ConnectorInvocationSpec`
+     is the one runtime-agnostic description; each runtime adapter
+     translates it into its own shape.
+  2. Anthropic's own docs state the Agent SDK "doesn't open a browser or run
+     an interactive OAuth flow" — it needs the caller's own application to
+     supply a bearer token via the server's `headers`. So a connector's
+     OAuth token (Swiggy, GitHub) can never be inherited from a runtime; it
+     lives in one shared, encrypted `ConnectorAccount` store
+     (agent/connector_accounts.py) that both runtimes read from alike.
+Decision:
+  - `agent/tools.py`: `FinancialToolExposureError`, not an `assert` (asserts
+    compile out under `-O`) — the one function both runtime adapters call to
+    build a tool list refuses outright if any tool is R3. No code path
+    exists that can offer a payment-capable tool to either LLM runtime.
+  - `agent/lifecycle.py`: a universal R0/R1/R2/R3 action-approval lifecycle;
+    `ActionProposal.__post_init__` refuses to even construct an R3 proposal
+    — a financial action has no lifecycle state to occupy here, full stop.
+    It only ever moves through the existing, unmodified
+    select_offer -> confirm -> gates -> Authorization -> payment path.
+  - `agent/eligibility.py`: routing is by real backend reachability
+    (REMOTE_MCP / NATIVE_API_ADAPTER) and policy (never RESTRICTED/
+    UNAVAILABLE evidence) plus account-connected state — deliberately NOT
+    gated on evidence tier alone, since that would make an
+    AVAILABLE_UNTESTED connector (GitHub) permanently unreachable: the only
+    way it becomes verified is by being reached once. `merchants.resolve_
+    merchant()` stays scoped to the commerce branch of normalization, exactly
+    as it's used everywhere else in this codebase — never promoted to a
+    universal router it was never built for.
+  - `connectors.py` gains `ConnectorBackendType` (REMOTE_MCP /
+    NATIVE_API_ADAPTER / CUSTOM_MCP / CLAUDE_DIRECTORY_ONLY / BROWSER_HANDOFF
+    / UNSUPPORTED) on every existing entry — the fix for a real conflation an
+    external review caught: "exists in Claude's consumer connector
+    directory" and "this backend can reach it independently" are different
+    claims, and the old model had no field for the difference.
+  - GitHub (`api.githubcopilot.com/mcp/`, Anthropic's own documented remote
+    MCP example) is the required non-commerce proof, chosen specifically
+    because it needs one personal access token, not an OAuth app — the
+    fastest real path to a second, genuinely different connector.
+  - Swiggy backend OAuth (agent/swiggy_oauth.py) targets the **Developer**
+    flow, confirmed self-serve on `http://localhost` by fetching
+    mcp.swiggy.com/builders/docs/start/developer/ directly ("You don't need
+    approval to start"), not the enterprise delegated-auth model — correct
+    scope for this single-user build, not a corner cut.
+  - `agent/results.py`: `ConnectorResult` wraps a Pydantic discriminated
+    union. Only `CommerceResult` and `DevTaskResult` are wired to a live
+    connector; `Calendar/Email/Task/File` are real typed extension points
+    with a real dispatch branch each, not connected to anything — building a
+    full pipeline for a capability with zero live access would be exactly
+    the fabricated completeness this project argues against elsewhere.
+  - `agent/custom_connectors.py` + `agent/ssrf_guard.py`: a user-pasted MCP
+    URL is HTTPS-only (no localhost exception — that's reserved for this
+    project's own Swiggy callback), rejects private/loopback/link-local
+    addresses, rejects cross-host redirects, and is re-resolved on every
+    call (not just at registration) to close a DNS-rebinding gap. Discovered
+    tools are stored disabled until explicitly enabled with a non-R3 risk
+    tier — `tools/list` populating a catalog is never the same as a tool
+    being usable.
+  - A second, parallel Attack Lab (agent/attack_lab.py) rather than forcing
+    these scenarios into benchmark.py's cart-shaped harness: the nine
+    payment gates defend a cart; these eight scenarios (R3 tool exposure,
+    R3 action-proposal construction, eligibility bypass via unconnected
+    account, eligibility bypass via restricted evidence, SSRF against cloud
+    metadata, SSRF against localhost, connector provenance mismatch,
+    cross-intent authorization reuse) attack a different layer entirely.
+    Wired into `make eval`'s pass/fail gate and rendered on /app/attack-lab
+    alongside the original four, not confined to a subagent report.
+Test: 98 new tests (agent/tools, connector_registry, connector_accounts,
+  eligibility, action_lifecycle, normalizer, runtime_adapters, ssrf_guard,
+  byok, custom_connectors, swiggy_oauth, missions, compatibility_matrix,
+  agent_endpoints, agent_attack_lab, feature_matrix_script) — full suite
+  582/582, 100% offline, no test depends on a real key or token.
+Real, stated blockers, not silently assumed done: no ANTHROPIC_API_KEY (the
+  API runtime is offline-tested, live-verification-pending-key); no
+  CLAUDE_CODE_OAUTH_TOKEN (the subscription runtime needs `claude
+  setup-token`, run by the project owner in their own terminal); no GitHub
+  personal access token (the required non-commerce proof needs one, 30
+  seconds to generate, not an OAuth app). None of these three are faked.

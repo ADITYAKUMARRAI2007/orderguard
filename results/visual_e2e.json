@@ -1,0 +1,54 @@
+{
+  "metadata": {
+    "commit": "8c4a77508ab8a17cf47f28741b71249ece3ab815",
+    "timestamp": "2026-08-31T15:54:41Z",
+    "method": "fresh local uvicorn process plus in-app browser screenshot inspection and DOM geometry",
+    "scenario_count": 18,
+    "suite_version": "2.0.0"
+  },
+  "viewports": [
+    {"name": "desktop", "width": 1440, "height": 900},
+    {"name": "tablet", "width": 768, "height": 900},
+    {"name": "mobile", "width": 390, "height": 844}
+  ],
+  "screens": [
+    {"name": "BUY / MISSION", "path": "/app"},
+    {"name": "CONNECTORS", "path": "/app/connectors"},
+    {"name": "ATTACK LAB", "path": "/app/attack-lab"},
+    {"name": "EVIDENCE", "path": "/app/evidence"},
+    {"name": "SYSTEM / FEATURES", "path": "/app/features"},
+    {"name": "EVAL / JUDGE", "path": "/app/eval"}
+  ],
+  "metrics": {
+    "screens_loaded": 18,
+    "horizontal_overflow_failures": 0,
+    "navigation_visibility_failures": 0,
+    "wide_table_failures": 0,
+    "screenshot_inspection_passed": true
+  },
+  "results": [
+    {"viewport": "desktop", "path": "/app", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "desktop", "path": "/app/connectors", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "desktop", "path": "/app/attack-lab", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "desktop", "path": "/app/evidence", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "desktop", "path": "/app/features", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "desktop", "path": "/app/eval", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "tablet", "path": "/app", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "tablet", "path": "/app/connectors", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "tablet", "path": "/app/attack-lab", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "tablet", "path": "/app/evidence", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "tablet", "path": "/app/features", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "tablet", "path": "/app/eval", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "mobile", "path": "/app", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "mobile", "path": "/app/connectors", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "mobile", "path": "/app/attack-lab", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "mobile", "path": "/app/evidence", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "mobile", "path": "/app/features", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0},
+    {"viewport": "mobile", "path": "/app/eval", "loaded": true, "nav_visible": true, "horizontal_overflow": false, "wide_tables": 0}
+  ],
+  "findings_fixed_during_run": [
+    "responsive header rules were overridden below 860px, causing all six screens to overflow",
+    "mobile and tablet tables were horizontally scrollable and appeared clipped",
+    "navigation and shared tables were changed to fully visible responsive layouts"
+  ]
+}

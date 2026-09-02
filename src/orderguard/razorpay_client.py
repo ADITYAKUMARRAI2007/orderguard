@@ -89,6 +89,29 @@ class RazorpayClient:
             },
         )
 
+    async def find_order_by_receipt(self, receipt: str) -> dict | None:
+        """Resolves a create_order call whose response was lost — timeout,
+        dropped connection, anything short of a clean success or a clean 4xx.
+        ``receipt`` is what create_order already sets to our idempotency key,
+        so this needs no new plumbing to correlate against. Returns ``None``
+        when Razorpay genuinely has no record of it, which is itself the
+        answer: safe to retry, nothing was created.
+
+        Real, reproduced gap (see G_SINGLE_CANDIDATE): a receipt is our own
+        idempotency key and should be unique, but this is Razorpay's own
+        index, not ours — trusting ``items[0]`` without checking for a second
+        match would silently pick one of two orders if Razorpay ever
+        returned more than one. Refuses instead of guessing, matching every
+        other "never guess" boundary in this module.
+        """
+        body = await self._request("GET", "/orders", params={"receipt": receipt[:40]})
+        items = body.get("items") or []
+        if len(items) > 1:
+            raise RazorpayError(
+                f"receipt {receipt!r} matched {len(items)} orders — refusing to guess which one is real"
+            )
+        return items[0] if items else None
+
     async def fetch_payment(self, payment_id: str) -> dict:
         """The independent read. Never skip this for what a browser reported."""
         return await self._request("GET", f"/payments/{payment_id}")

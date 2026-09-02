@@ -24,7 +24,7 @@ from typing import NamedTuple
 
 from .commerce.discovery import DiscoveryRefused, StoreCapability, discover
 from .commerce.stores import ALL as VERIFIED_STORES
-from .connectors import CONNECTORS, Status
+from .connectors import CONNECTORS, Evidence
 
 __all__ = ["Reach", "MerchantVerdict", "resolve_merchant"]
 
@@ -89,12 +89,18 @@ async def resolve_merchant(
             continue
         if not _matches(name, connector.id, connector.label):
             continue
-        if connector.status is Status.LIVE:
+        if connector.evidence is Evidence.DIRECT_VERIFIED:
             return MerchantVerdict(
                 name, Reach.SHOPPABLE, domain=connector.id,
                 label=connector.label, message=f"Shopping at {connector.label}.",
             )
-        if connector.status in (Status.NEEDS_ACCESS, Status.RESTRICTED):
+        # RESTRICTED, AVAILABLE_UNTESTED and CONNECTOR_VERIFIED all mean the
+        # same thing for OUR OWN adapters here: real, but not something
+        # ShopifyMCPAdapter/FreshCartAdapter can reach directly. Untested by
+        # us is not the same claim as reachable by us.
+        if connector.evidence in (
+            Evidence.RESTRICTED, Evidence.AVAILABLE_UNTESTED, Evidence.CONNECTOR_VERIFIED,
+        ):
             return MerchantVerdict(
                 name, Reach.BLOCKED, label=connector.label,
                 message=(

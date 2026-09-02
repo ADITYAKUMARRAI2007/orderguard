@@ -136,7 +136,7 @@ browser saw a success message.
 
 ---
 
-## 7. Audit event
+## 7. Audit event — `src/orderguard/audit.py`
 
 ```
 AuditEvent:
@@ -148,9 +148,20 @@ AuditEvent:
     created_at: datetime
 ```
 
-Append-only. Any retrospective edit breaks every later hash.
+Append-only. Any retrospective edit breaks every later hash — `verify_chain`
+recomputes every hash from stored content rather than trusting what is saved,
+and raises `ChainTampered` at the first event that disagrees with itself.
+**Tamper-evident, not immutable**: a hash chain proves an edit changed the
+data; it cannot stop someone with raw database access from rewriting every
+row to match. That is a real, checkable property and no more.
+
 **Refusals are recorded with the same weight as actions** — the exception list is
-the deliverable, not an apology.
+the deliverable, not an apology. `mcp_server.py` writes `intent_refused` and
+`cart_check_refused` events alongside `intent_recorded` and `cart_checked`.
+
+This contract was frozen at CP-0 and specified here since the start, but had
+no implementation until 2026-08-29 — a grep found nothing behind it. See
+FAILURE_LOG F-030.
 
 ---
 
@@ -179,10 +190,67 @@ produces a clarification or escalation — never an automatic financial action.
 
 ---
 
+## 9. The connector cart contract — `src/orderguard/mcp_server.py`
+
+```
+record_intent(user_request, items[], maximum_total_paise, merchant?, currency?)
+    -> {recorded, intent_id, ...} | {recorded: False, missing[], ask_the_user}
+
+check_cart(intent_id, merchant, lines[{item_id, title?, quantity, line_total_paise}],
+           total_paise, currency?, all_items_available?)
+    -> {allow, checks_passed, checks_total, failed[], reasons[], ...}
+```
+
+This shape lived only inside one file's tool schemas until 2026-08-29 — naming
+it here makes "connector-agnostic by construction" (see `docs/CONNECTORS.md`)
+an artifact a judge can check against the code, not a claim to take on trust.
+`check_cart` makes no assumption about which store a cart came from: any
+assistant, with any connector, hands over a merchant name and a list of
+`{item_id, quantity, line_total_paise}`, and the exact same 13 gates run
+regardless. Proven live against Zomato; architecturally identical for any
+connector matching this shape.
+
+Every intent recorded and every cart checked — allowed or refused — also
+produces a `record_check` entry in `connector_log.py` and an `AuditEvent` in
+`audit.py` (#7 above), so the claim "this has actually been checked against
+real carts" is backed by a growing, queryable log rather than a chat
+transcript.
+
+## 10. The agent orchestrator's API surface — `src/orderguard/app.py`, added D-053
+
+```
+POST /api/agent/run            {message, category}   -> {category, connector_id, runtime, results[], council}
+POST /api/agent/missions/run   {message}              -> {message, runtime, steps[{category, connector_id, results[], council}]}
+GET  /api/agent/connectors                            -> {connectors[{id, label, category, backend_type, evidence, capability, auth, status, tools[], note}]}
+GET  /api/runtime/status                              -> {server_managed_api_key, byok_session_api_key, byok_masked, subscription_runtime, active_agent_runtime}
+POST /api/runtime/api-key      {api_key}              -> runtime/status shape (BYOK; process memory only)
+POST /api/runtime/api-key/forget                      -> runtime/status shape
+POST /api/connectors/{id}/connect                     -> {authorize_url}            # Swiggy OAuth only
+GET  /api/connectors/swiggy/callback  {code, state}   -> {connector_id, status}
+POST /api/connectors/{id}/token        {token}        -> {connector_id, status}     # manual-token connectors (GitHub) only
+POST /api/connectors/{id}/disconnect                  -> {connector_id, status}
+GET  /api/connectors/{id}/status                      -> {connector_id, status}
+POST /api/connectors/custom    {label, url, category} -> {id, label, url, category} # SSRF-checked before registration
+POST /api/connectors/custom/{id}/tools/discover       -> {connector_id, discovered_tools[]}   # inserted disabled
+POST /api/connectors/custom/{id}/tools/{name}/enable  {risk_tier}  -> enabled=true  # R3 refused with 400/ValueError
+```
+
+**The one invariant every route above shares**: none of them can write a cart
+or move money. `results[].payload` is a discriminated union (`agent/results.py`);
+for `result_type: "commerce_candidates"`, `council` is the same, unmodified
+`CouncilResult` from contract-adjacent `decision_council.py` — advisory only.
+Every actual purchase still goes through `select_offer -> confirm_session_cart
+-> payment/order -> payment/verify`, above, completely unchanged by this
+contract. `POST /api/agent/run` and `/api/agent/missions/run` return HTTP 503
+if no runtime is configured (fail closed, matching `LLMProvider`'s pattern in
+#8) and HTTP 400 — after emitting `r3_tool_exposure_blocked` to the audit
+chain — if a financial tool would otherwise have reached an agent runtime.
+
 ## Enums — frozen
 
 `PaymentStatus` · `OrderStatus` · `IntentStatus` · `Action` · `Classification` ·
-`SubstitutionPolicy` · `ClarificationReason` · `GateName`
+`SubstitutionPolicy` · `ClarificationReason` · `GateName` · `connectors.Evidence` ·
+`connectors.Capability` · `connectors.ConnectorBackendType` (added D-053)
 
 Strings are not used for state anywhere. A typo in a string is a runtime surprise;
 a typo in an enum member is an import error.

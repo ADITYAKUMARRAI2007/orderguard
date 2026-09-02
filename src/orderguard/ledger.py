@@ -42,6 +42,7 @@ from sqlmodel import Field, Session, SQLModel, create_engine, select
 __all__ = [
     "LedgerStatus", "LedgerEntry", "ledger_engine",
     "claim_order", "finalize_if_pending", "reject", "get_entry",
+    "get_entry_by_order_id", "mark_unknown", "resolve_unknown",
 ]
 
 _DEFAULT_PATH = Path("data/ledger.db")
@@ -58,6 +59,14 @@ class LedgerStatus(StrEnum):
                              # a later attempt with the correct proof may still
                              # succeed, because rejecting one bad claim must not
                              # burn the user's only chance to pay correctly
+    UNKNOWN = "unknown"      # the create_order call's OUTCOME is uncertain — a
+                             # timeout or dropped connection means we cannot
+                             # tell "Razorpay never got it" from "Razorpay made
+                             # the order and the response got lost". Never
+                             # treated as FAILED (that would license a blind
+                             # retry that could create a second real order) and
+                             # never treated as CAPTURED. The only way out is
+                             # asking Razorpay directly — see reconcile.py.
 
 
 class LedgerEntry(SQLModel, table=True):
@@ -219,3 +228,54 @@ def get_entry(engine: Engine, idempotency_key: str) -> LedgerEntry | None:
         return db.exec(
             select(LedgerEntry).where(LedgerEntry.idempotency_key == idempotency_key)
         ).first()
+
+
+def get_entry_by_order_id(engine: Engine, razorpay_order_id: str) -> LedgerEntry | None:
+    """The lookup a webhook needs: it knows Razorpay's order id, not our
+    idempotency key."""
+    with Session(engine) as db:
+        return db.exec(
+            select(LedgerEntry).where(LedgerEntry.razorpay_order_id == razorpay_order_id)
+        ).first()
+
+
+def mark_unknown(engine: Engine, idempotency_key: str) -> None:
+    """The create_order call's outcome is uncertain — never call this after a
+    clean success or a clean 4xx refusal, only after a timeout or dropped
+    connection where Razorpay's own state is genuinely unknown to us.
+    """
+    with Session(engine) as db:
+        db.exec(
+            update(LedgerEntry)
+            .where(
+                LedgerEntry.idempotency_key == idempotency_key,
+                LedgerEntry.status == LedgerStatus.PENDING,
+            )
+            .values(status=LedgerStatus.UNKNOWN)
+        )
+        db.commit()
+
+
+def resolve_unknown(
+    engine: Engine, idempotency_key: str, *, razorpay_order_id: str | None,
+) -> None:
+    """Razorpay's own record is the only thing allowed to resolve an UNKNOWN
+    row. ``razorpay_order_id`` given means the order WAS created despite the
+    lost response — attach it and return to PENDING, the same state a normal
+    successful create_order call leaves behind. ``None`` means Razorpay has no
+    record of it — also PENDING, but with no order attached, so the next
+    payment/order call is free to actually create one.
+    """
+    with Session(engine) as db:
+        values: dict = {"status": LedgerStatus.PENDING}
+        if razorpay_order_id:
+            values["razorpay_order_id"] = razorpay_order_id
+        db.exec(
+            update(LedgerEntry)
+            .where(
+                LedgerEntry.idempotency_key == idempotency_key,
+                LedgerEntry.status == LedgerStatus.UNKNOWN,
+            )
+            .values(**values)
+        )
+        db.commit()

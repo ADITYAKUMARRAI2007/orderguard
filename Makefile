@@ -1,4 +1,4 @@
-.PHONY: test test-offline lint
+.PHONY: test test-offline lint eval feature-matrix test-report
 
 # Full test suite.
 test:
@@ -29,3 +29,21 @@ demo:
 # docs/BENCHMARK.md. Exits non-zero if the false-match rate is ever nonzero.
 benchmark:
 	uv run python scripts/benchmark.py
+
+# Every evidence artifact this project makes, in one reproducible run: the
+# fixed fifty, the injection curve, the Hostile Attack Lab, and the three
+# baselines. No model calls, no network. Writes docs/BENCHMARK.md AND
+# results/latest.json — the UI and README read the JSON so a number can
+# never drift from what this actually measured.
+eval:
+	uv run --offline --no-sync python scripts/eval.py
+
+# The full shipped-feature inventory, written from one list so
+# docs/FEATURE_MATRIX.md and results/feature_matrix.json cannot drift apart.
+feature-matrix:
+	uv run --offline --no-sync python scripts/feature_matrix.py
+
+# Runs the real backend suite and writes results/test_report.json — the
+# checks-run count the UI shows is this file's numbers, never typed by hand.
+test-report:
+	uv run python scripts/test_report.py

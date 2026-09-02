@@ -1,0 +1,27 @@
+{
+  "metadata": {
+    "commit": "8c4a77508ab8a17cf47f28741b71249ece3ab815",
+    "timestamp": "2026-09-02T04:43:15.818419+00:00",
+    "seed": 20260831,
+    "model_runtime": "api+subscription-offline-fixtures",
+    "scenario_count": 3,
+    "suite_version": "2.0.0"
+  },
+  "metrics": {
+    "runtime_parity": 1.0
+  },
+  "scenarios": [
+    {
+      "name": "semantic_tool_result_parity",
+      "correct": true
+    },
+    {
+      "name": "normalized_payload_parity",
+      "correct": true
+    },
+    {
+      "name": "r3_rejection_parity",
+      "correct": true
+    }
+  ]
+}

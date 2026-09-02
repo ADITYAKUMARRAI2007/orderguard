@@ -47,6 +47,10 @@ class VerifiedPayment(BaseModel):
     currency: str
     status: str
     method: str = ""
+    # Additive, not part of the frozen 4-step contract (docs/API_CONTRACTS.md
+    # #6) above — carried through from the SAME independent fetch already
+    # made in step 3, for G_NO_REFUND to check without a second network call.
+    amount_refunded_paise: int = Field(default=0, ge=0)
 
 
 class Rejection(BaseModel):
@@ -120,7 +124,9 @@ async def verify_payment(
             reason=f"paid in {currency}; the confirmed cart was {expected_currency}"
         )
 
+    refunded = record.get("amount_refunded")
     return VerifiedPayment(
         payment_id=payment_id, order_id=order_id, amount_paise=amount,
         currency=currency.upper(), status=status, method=str(record.get("method") or ""),
+        amount_refunded_paise=refunded if isinstance(refunded, int) and not isinstance(refunded, bool) else 0,
     )

@@ -184,6 +184,31 @@ async def test_the_wrong_currency_is_rejected():
 
 
 @pytest.mark.asyncio
+async def test_the_refunded_amount_is_carried_through_for_the_no_refund_gate():
+    """amount_refunded is additive to the frozen 4-step contract (docs/
+    API_CONTRACTS.md #6) -- captured from the SAME independent fetch, for
+    checkout_guard.py's G_NO_REFUND gate to check without a second call."""
+    client = _FakeClient(_captured(amount_refunded=5000))
+    result = await verify_payment(
+        order_id=ORDER_ID, payment_id=PAYMENT_ID, signature=_sign(ORDER_ID, PAYMENT_ID),
+        key_secret=SECRET, client=client, expected_amount_paise=29900,
+    )
+    assert isinstance(result, VerifiedPayment)
+    assert result.amount_refunded_paise == 5000
+
+
+@pytest.mark.asyncio
+async def test_a_captured_payment_with_no_refund_field_defaults_to_zero():
+    client = _FakeClient(_captured())
+    result = await verify_payment(
+        order_id=ORDER_ID, payment_id=PAYMENT_ID, signature=_sign(ORDER_ID, PAYMENT_ID),
+        key_secret=SECRET, client=client, expected_amount_paise=29900,
+    )
+    assert isinstance(result, VerifiedPayment)
+    assert result.amount_refunded_paise == 0
+
+
+@pytest.mark.asyncio
 async def test_a_network_failure_during_the_independent_fetch_is_a_rejection():
     """Never crash, and never treat 'could not check' as 'must be fine'."""
     client = _FakeClient(RazorpayError("timed out"))

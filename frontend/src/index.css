@@ -1,0 +1,194 @@
+/* Font import must be the very first statement: PostCSS rejects any
+   @import that follows Tailwind's expanded output. */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;0,800;1,400&family=Inter:wght@400;500;600&family=Fragment+Mono&display=swap');
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* OrderGuard — "control plane terminal".
+   Design direction resolved with the ui-ux-pro-max skill (--design-system
+   --variance 8 --motion 8): Brutalism, and JetBrains Mono, which that
+   dataset lists specifically for security tools. So: 0px radius, heavy
+   visible borders, hard offset shadows instead of soft blur (depth you can
+   actually read at a glance), a visible grid, and uppercase micro-labels.
+   The one place we deliberately depart from strict brutalism's "no
+   transitions" rule is motion: this product's whole story is a pipeline
+   executing, and motion is what makes cause-and-effect legible. */
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-sans: 'JetBrains Mono', ui-monospace, monospace;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    /* Solari's own mix, replicated: Inter for section headings/body copy
+       (regular weight — the "engineered, not shouting" register their
+       headings read in), Fragment Mono for the small uppercase eyebrow
+       label above each section. JetBrains Mono stays for nav/buttons/data
+       — Solari uses it there too, confirmed against its own computed
+       styles, not guessed. */
+    --font-heading: 'Inter', ui-sans-serif, sans-serif;
+    --font-eyebrow: 'Fragment Mono', 'JetBrains Mono', ui-monospace, monospace;
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --color-signal: var(--signal);
+    --color-warn: var(--warn);
+    --radius-sm: 0px;
+    --radius-md: 0px;
+    --radius-lg: 0px;
+    --radius-xl: 0px;
+}
+
+:root {
+    --background: #f4f4ef;
+    --foreground: #0a0a0a;
+    --card: #ffffff;
+    --card-foreground: #0a0a0a;
+    --popover: #ffffff;
+    --popover-foreground: #0a0a0a;
+    --primary: #0a0a0a;
+    --primary-foreground: #ffffff;
+    --secondary: #e8e8e0;
+    --secondary-foreground: #0a0a0a;
+    --muted: #e8e8e0;
+    --muted-foreground: #52524c;
+    --accent: #00e08a;
+    --accent-foreground: #0a0a0a;
+    --destructive: #ff3b30;
+    --border: #0a0a0a;
+    --input: #0a0a0a;
+    --ring: #00e08a;
+    --signal: #00b86b;
+    --warn: #ff8c00;
+    --radius: 0px;
+}
+
+.dark {
+    /* Near-black, not grey: a control plane reads as an instrument, and
+       every border/glow below is tuned against this exact surface. */
+    --background: #0a0a0a;
+    --foreground: #f0f0ea;
+    --card: #121212;
+    --card-foreground: #f0f0ea;
+    --popover: #121212;
+    --popover-foreground: #f0f0ea;
+    --primary: #00ff9c;
+    --primary-foreground: #0a0a0a;
+    --secondary: #1c1c1c;
+    --secondary-foreground: #f0f0ea;
+    --muted: #1c1c1c;
+    --muted-foreground: #8a8a82;
+    --accent: #00ff9c;
+    --accent-foreground: #0a0a0a;
+    --destructive: #ff4136;
+    --border: #2a2a2a;
+    --input: #2a2a2a;
+    --ring: #00ff9c;
+    --signal: #00ff9c;
+    --warn: #ffb000;
+}
+
+@layer base {
+    * {
+        @apply border-border;
+        border-radius: 0 !important;
+    }
+    body {
+        @apply bg-background text-foreground;
+        font-family: 'JetBrains Mono', ui-monospace, monospace;
+        -webkit-font-smoothing: antialiased;
+    }
+    /* Brutalism's "visible grid", used as an actual canvas surface rather
+       than decoration — the pipeline is drawn on top of it. */
+    .grid-surface {
+        background-image:
+            linear-gradient(to right, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px),
+            linear-gradient(to bottom, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px);
+        background-size: 32px 32px;
+    }
+    /* Depth without soft shadow: a hard offset block reads as a physical
+       stacked plane and stays crisp at any zoom. */
+    .hard {
+        box-shadow: 5px 5px 0 0 var(--border);
+    }
+    .hard-lg {
+        box-shadow: 8px 8px 0 0 var(--border);
+    }
+    .hard-signal {
+        box-shadow: 5px 5px 0 0 var(--signal);
+    }
+    .hard-destructive {
+        box-shadow: 5px 5px 0 0 var(--destructive);
+    }
+    .label-micro {
+        font-size: 10px;
+        line-height: 1;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        font-weight: 700;
+    }
+    /* Solari's small section-eyebrow: Fragment Mono, 14px, uppercase,
+       wide tracking, muted-signal color — sits directly above every
+       section heading on that site. */
+    .eyebrow {
+        font-family: var(--font-eyebrow);
+        font-size: 13px;
+        line-height: 1;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        font-weight: 400;
+    }
+    /* Scanline sweep for the "executing" state — motion that means
+       "work is happening here", not decoration. */
+    @keyframes scan {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(100%); }
+    }
+    .scanning::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--signal) 22%, transparent), transparent);
+        animation: scan 1.4s linear infinite;
+        pointer-events: none;
+    }
+    /* Slow Ken Burns cross-fade: the imagery is genuinely moving, not a
+       static collage. Each frame drifts and scales while the stack
+       cross-fades, so the hero reads as footage rather than a slideshow. */
+    @keyframes kenburns {
+        0%   { opacity: 0; transform: scale(1.06) translate3d(0, 0, 0); }
+        8%   { opacity: 1; }
+        20%  { opacity: 1; }
+        28%  { opacity: 0; transform: scale(1.16) translate3d(-1.5%, -1.5%, 0); }
+        100% { opacity: 0; transform: scale(1.16) translate3d(-1.5%, -1.5%, 0); }
+    }
+    .kenburns {
+        opacity: 0;
+        animation: kenburns 16s ease-in-out infinite;
+        will-change: transform, opacity;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .scanning::after { animation: none; }
+        .kenburns { animation: none; opacity: 1; }
+        .kenburns:not(:first-child) { display: none; }
+        *, *::before, *::after {
+            animation-duration: 0.01ms !important;
+            transition-duration: 0.01ms !important;
+        }
+    }
+}

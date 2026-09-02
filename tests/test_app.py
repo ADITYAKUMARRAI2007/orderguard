@@ -129,6 +129,40 @@ def test_complete_single_item_flow_freezes_a_verified_cart(monkeypatch):
     assert confirmed.json()["intent"]["confirmed_cart_hash"]
 
 
+def test_search_results_carry_an_advisory_council_recommendation(monkeypatch):
+    """The wiring, not just the module: decision_council actually runs inside
+    a real search response. With no Fit/Critic answers registered, the stub
+    can't answer either question — proving the live app falls back safely
+    (fallback_used=True) rather than the endpoint silently skipping the
+    council or crashing when the model has nothing to say."""
+    app_module._SESSIONS.clear()
+    monkeypatch.setattr(app_module, "provider_from_env", _OneItemProvider)
+
+    async def search(*args, **kwargs):
+        outcome = _outcome()
+        outcome.offers.append(ScoredOffer(
+            offer=Offer(
+                store="othershop.example", store_label="Other Shop", product_id="p9",
+                variant_id="v9", title="Milk", price_minor=6000, currency="INR",
+            ),
+            relevance=1.0, in_stock=True, priced=True, within_budget=True,
+            line_total_minor=12000,
+        ))
+        return outcome
+
+    monkeypatch.setattr(app_module, "search_stores", search)
+    monkeypatch.setattr(app_module, "ShopifyMCPAdapter", _Adapter)
+    client = TestClient(app_module.app)
+
+    session_id = client.post("/api/sessions", json={"user_id": "u1", "request_text": "two litres milk"}).json()["session_id"]
+    result = client.post(f"/api/sessions/{session_id}/items/0/search").json()
+
+    assert result["council"] is not None
+    assert result["council"]["alternatives_considered"] == 2
+    assert result["council"]["fallback_used"] is True
+    assert result["council"]["recommended_id"] in {"slurrpfarm.com|v1", "othershop.example|v9"}
+
+
 def test_a_store_the_user_named_is_enforced_at_selection(monkeypatch):
     """"Get me coffee from Slurrp Farm" must not quietly buy from somewhere else.
 
@@ -189,17 +223,18 @@ def test_a_store_the_user_named_is_enforced_at_selection(monkeypatch):
 def test_the_connector_directory_shows_what_we_cannot_use(monkeypatch):
     """A directory listing only what works would be a sales page.
 
-    The blocked entries are the informative ones: Swiggy is real and answered
-    401, Zomato's terms forbid us, Zepto has no public surface at all.
+    The blocked entries are the informative ones: Zomato's terms forbid us,
+    Zepto has no public surface at all. Swiggy used to be in this category
+    (401, no credentials) until it was actually connected on 2026-08-29 —
+    see test_connectors.py for that story now.
     """
     client = TestClient(app_module.app)
     body = client.get("/api/connectors").json()
     found = {c["id"]: c for c in body["connectors"]}
 
-    assert found["swiggy"]["status"] == "needs_access"
-    assert "401" in found["swiggy"]["evidence"]
-    assert found["zomato"]["status"] == "restricted"
-    assert found["zepto"]["status"] == "unavailable"
+    assert found["swiggy-instamart"]["evidence"] == "connector_verified"
+    assert found["zomato"]["evidence"] == "restricted"
+    assert found["zepto"]["evidence"] == "unavailable"
 
     # and nothing in the directory claims it can place a third-party order
     assert all(not c["can_order"] for c in body["connectors"] if c["id"] != "razorpay")
@@ -696,3 +731,107 @@ def test_freshcart_with_nothing_in_stock_explains_and_offers_the_web(monkeypatch
     out = client.post(f"/api/sessions/{session_id}/items/0/search").json()
     assert out["offers"] == []
     assert "FreshCart does not stock caviar" in out["explanation"]
+
+
+# --- evidence screen endpoints -----------------------------------------------
+
+def test_eval_results_reports_honestly_when_never_generated(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)   # no results/latest.json here
+    client = TestClient(app_module.app)
+    body = client.get("/api/eval-results").json()
+    assert body["generated_at"] is None
+    assert "make eval" in body["note"]
+
+
+def test_audit_verify_reports_a_healthy_empty_chain(monkeypatch):
+    from orderguard.audit import audit_engine
+    monkeypatch.setattr(app_module, "AUDIT", audit_engine(":memory:"))
+    client = TestClient(app_module.app)
+
+    body = client.get("/api/audit/verify").json()
+    assert body["verified"] is True
+    assert body["event_count"] == 0
+
+
+# --- /api/ci-checks: the GitHub-Actions-style checks-run view --------------
+
+def test_ci_checks_reports_pending_honestly_when_nothing_has_run_yet(monkeypatch, tmp_path):
+    from orderguard.audit import audit_engine
+    monkeypatch.setattr(app_module, "AUDIT", audit_engine(":memory:"))
+    monkeypatch.chdir(tmp_path)   # no results/*.json here at all
+    client = TestClient(app_module.app)
+
+    body = client.get("/api/ci-checks").json()
+    names = {c["name"]: c for c in body["checks"]}
+
+    # The one check that always runs regardless of files on disk (it reads
+    # the live audit engine, not a results/ file) reports real success.
+    assert names["Audit chain integrity"]["status"] == "success"
+    assert names["Audit chain integrity"]["summary"] == "0 events, hash chain intact"
+
+    # A check with no artifact yet is reported as not-yet-run, never
+    # silently omitted and never guessed at as passing or failing.
+    assert names["Backend test suite"]["status"] == "pending"
+    assert "make test-report" in names["Backend test suite"]["summary"]
+
+    # Checks whose artifact simply doesn't exist yet are omitted, not
+    # fabricated with zeros.
+    assert "Fixed-fifty adversarial cart-integrity" not in names
+    assert "Connector routing accuracy" not in names
+
+
+def test_ci_checks_assembles_the_repos_own_real_artifacts(monkeypatch):
+    """Run against the actual repo's results/ directory (no chdir) — proves
+    the endpoint reads genuinely-written files, not fixtures, and that its
+    pass/fail verdict per check matches what that file itself already says."""
+    import json
+    from pathlib import Path
+
+    from orderguard.audit import audit_engine
+    monkeypatch.setattr(app_module, "AUDIT", audit_engine(":memory:"))
+    client = TestClient(app_module.app)
+
+    body = client.get("/api/ci-checks").json()
+    names = {c["name"]: c for c in body["checks"]}
+
+    test_report_path = Path("results/test_report.json")
+    if test_report_path.exists():
+        on_disk = json.loads(test_report_path.read_text())
+        assert names["Backend test suite"]["summary"] == on_disk["summary_line"]
+        assert (names["Backend test suite"]["status"] == "success") == (on_disk["failed"] == 0)
+
+    latest_path = Path("results/latest.json")
+    if latest_path.exists():
+        latest = json.loads(latest_path.read_text())
+        agent_lab = latest.get("agent_attack_lab")
+        if agent_lab:
+            # Regression: this check's status/summary used to read a field
+            # (false_match_rate) this fixture never has, so it silently
+            # reported FAILURE on an all-correct run — checked explicitly.
+            check = names["Agent-layer Attack Lab"]
+            assert (check["status"] == "success") == bool(agent_lab["all_correct"])
+            assert str(agent_lab["total"]) in check["summary"]
+
+    # overall is failure if, and only if, at least one real check failed —
+    # never independently computed.
+    assert (body["overall"] == "failure") == any(c["status"] == "failure" for c in body["checks"])
+
+
+def test_audit_verify_detects_a_real_tamper(monkeypatch):
+    from orderguard.audit import AuditEvent, append_event, audit_engine
+    from sqlmodel import Session, select
+
+    engine = audit_engine(":memory:")
+    append_event(engine, "test_event", {"a": 1})
+    monkeypatch.setattr(app_module, "AUDIT", engine)
+
+    with Session(engine) as db:
+        row = db.exec(select(AuditEvent).where(AuditEvent.seq == 0)).one()
+        row.payload_json = '{"a": 999}'
+        db.add(row)
+        db.commit()
+
+    client = TestClient(app_module.app)
+    body = client.get("/api/audit/verify").json()
+    assert body["verified"] is False
+    assert body["broken_at_seq"] == 0

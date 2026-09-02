@@ -1620,3 +1620,228 @@ A security control that exists only as an accidental side effect of an
 unrelated data structure is one refactor away from silently disappearing.
 Naming it turns a coincidence into an invariant someone has to deliberately
 break to remove.
+
+# F-030 — A frozen contract with no implementation behind it
+
+## Expected behaviour
+`docs/API_CONTRACTS.md` #7 has specified `AuditEvent` (seq, event_type,
+payload, prev_hash, entry_hash, created_at) as a frozen interface since CP-0,
+2026-08-26. A reader of the docs would expect a hash-chained audit log to
+exist somewhere in `src/`.
+
+## Actual behaviour
+`grep -rln "AuditEvent\|prev_hash\|entry_hash" src/ tests/` returned nothing,
+on 2026-08-29 — three days and thirty-six other decisions after the contract
+was frozen. The interface was documented as if built. It was never built.
+
+## Root cause
+CP-0's frozen-interfaces list was written before any code existed, as a
+target to build toward. Every other interface on that list (money, gates,
+idempotency key, `PurchaseIntent`, `CommerceAdapter`) got implemented as the
+project progressed and the checklist was never re-walked against the docs to
+confirm nothing had been silently dropped. This one was.
+
+Found not by a user testing the app, and not by a test failing, but by
+auditing the project's OWN documentation against its OWN source tree while
+reviewing what to build next — the same category of check that caught F-029
+(a gate passing for an unverified reason), applied to documentation instead
+of code.
+
+## Fix
+`src/orderguard/audit.py` — `AuditEvent`, `append_event`, `verify_chain`,
+matching the frozen shape exactly. Wired into `mcp_server.py`: every
+`record_intent` and `check_cart` call, allowed or refused, now appends a real
+event. A new tool, `verify_audit_trail`, lets any caller independently
+recompute every hash and get back either full verification or the exact
+event where it broke.
+
+## Regression test
+tests/test_audit.py (10 cases: chain linking, canonical-JSON determinism,
+tamper detection on a payload edit, tamper detection on a prev_hash edit,
+70 sequential appends with no duplicate or skipped `seq`).
+tests/test_mcp_server.py (5 cases: intents and cart checks — including
+refusals — actually land in the trail; a tampered event is caught through
+the live `verify_audit_trail` tool, not just the underlying module).
+
+## Lesson
+A specification is not evidence that something exists. Freezing an interface
+early was the right call — it kept later work honest about the shape things
+had to take — but "frozen" was silently read as "implemented" for three days,
+by both the docs and by me. The fix for F-029 was checking why a gate passed.
+The fix for this one is the same instinct pointed at the docs folder: don't
+trust a contract is real until something actually greps for it.
+
+## Production relevance
+Documentation drift in a safety-relevant system is not cosmetic. A judge, an
+auditor, or a future maintainer reading `API_CONTRACTS.md` would reasonably
+conclude the audit trail exists and rely on it being there. The gap between
+"specified" and "shipped" is exactly the gap an incident review finds after
+the fact — better to find it via `grep` than via a postmortem.
+
+# F-031 — G_CONFIRMATION_MATCHES was comparing a snapshot to itself
+
+## Expected behaviour
+The whole pitch of this project is that a cart is verified independently
+before money moves, and that a change between confirmation and payment is
+caught. `G_CONFIRMATION_MATCHES` exists specifically to be the gate that
+catches a cart mutated after the user confirmed it.
+
+## Actual behaviour
+`create_payment_order` (app.py) ran every pre-payment gate, including
+`G_CONFIRMATION_MATCHES`, against `session.observed_cart` — the exact same
+object `confirm_session_cart` had frozen a hash of moments (or minutes)
+earlier. Nothing between confirmation and payment ever called the adapter's
+already-existing `read_cart()` again. The gate was therefore comparing a
+stored object's hash against itself: it could never fail because of anything
+that changed at the real merchant, only because of an in-memory mutation to
+the session object directly — which is not the actual attack surface. A
+price change, a stock change, or the cart being altered on the merchant's
+side between confirmation and payment would have sailed straight through.
+
+## Root cause
+`G_AUTHORIZATION_FRESH` (D-035) was built to answer "how long ago was this
+confirmed" and does that correctly. It was easy to read that as also having
+answered "is the confirmed state still true" — a different question that
+needs a fresh read, not a clock. `CommerceAdapter.read_cart()` already
+existed, already worked, and was already used once per session (at
+selection time) — it was simply never called a second time.
+
+Found by deliberately tracing the payment endpoint line by line while
+auditing the codebase against two independent feature-review passes, neither
+of which had actually opened this file to check. Not found by a failing
+test, because no test exercised a merchant-side change between confirmation
+and payment — every existing test's fake adapter returned the same cart on
+every call, which is honest data and never exposed the gap.
+
+## Fix
+`create_payment_order` now calls a new `_reread_cart_from_merchant(session)`
+— same adapter construction `select_offer` already uses — and assigns the
+result to `session.observed_cart` *before* `_pre_payment_gates` runs.
+`G_CONFIRMATION_MATCHES` now compares the frozen `confirmed_cart_hash`
+against a hash computed from data actually re-fetched from the merchant, so
+a real change is a real mismatch. A merchant that cannot be reached for the
+re-read fails closed (502), the same fail-closed shape as F-028, rather than
+falling back to trusting the stale snapshot.
+
+## Regression test
+tests/test_payment_flow.py::test_a_merchant_side_cart_change_after_confirmation_is_blocked_not_paid
+— a fake adapter returns 2 units on the first `read_cart` (what gets
+confirmed) and 5 units on every call after (modelling the merchant's own
+state changing, not client tampering). Confirmed by running it against the
+pre-fix code via `git stash`: without the fix, the adapter's second call
+never happens at all — proving the old code genuinely never asked again,
+not just that it asked and happened to still pass.
+
+## Lesson
+A time-based check (confirmation freshness) and a state-based check (the
+cart hasn't changed) answer different questions, and having a well-tested
+gate for one can quietly stand in for the other in the developer's head, if
+not in the code. The regression test is the important artifact here, not
+the fix itself — a one-line change is easy to trust once it exists; the test
+is what proves the specific vulnerable case is closed, not just that
+something plausible-looking was edited.
+
+## Production relevance
+This is the class of bug a payments company's own review process exists to
+catch: a control whose name says it verifies something, that in fact
+verifies something adjacent to it. TOCTOU gaps are a known, named category of
+vulnerability precisely because "we checked it earlier" and "we checked it
+now" are different claims, and code that only ever does the first one reads,
+at a glance, exactly like code that does both.
+
+# F-032 — the payment button was a labeled stub, and only the browser found it
+
+## Expected behaviour
+Clicking "Continue to payment approval" on the live BUY screen should start
+the real headless payment leg (`POST /payment/order`) and open the real
+Razorpay Checkout page, the same flow `web/checkout.html` already implements
+in full.
+
+## Actual behaviour
+It did none of that. Its `onclick` handler read:
+
+    () => { setStep("payment"); activity("Payment is not connected yet", "Waiting");
+            addMessage("...this build has not connected a real payment action yet..."); }
+
+Honestly labeled, not a crash — an earlier version of this frontend was built
+before the payment leg existed, and the stub said exactly what it did. But
+every backend workstream since (the F-031 fix, signed Authorization, D-045's
+PAYMENT_UNKNOWN, the webhook receiver) was built, tested, and proven correct
+entirely at the API level. Nothing in 484 passing tests could have caught
+this, because `TestClient` calls the endpoints directly — it never clicks a
+button. The gap was invisible to every test in the suite and visible in
+about ten seconds of actually using the app.
+
+## Root cause
+`web/checkout.html` (116 lines, fully wired to `/payment/order` and
+`/payment/verify`, real Razorpay Checkout integration) already existed and
+already worked. The only missing piece was one line connecting the BUY
+screen's approval button to it. Backend work and frontend wiring drifted out
+of sync, and nothing in the test suite spans that seam — API tests prove the
+backend; there was no test proving a button click reaches an endpoint.
+
+## Fix
+`web/app.js`: the approval button's `onclick` now navigates to
+`/app/pay/${state.sessionId}`, which is the already-working checkout page.
+
+## Regression test
+None added — this is a one-line UI wiring fix with no meaningful unit-test
+surface, and the existing `checkout.html` logic is already exercised at the
+API level by `tests/test_payment_flow.py`. The real regression protection
+here is procedural: this file exists so the next feature gets clicked
+through in a browser before being called done, not just curled.
+
+## Lesson
+"For UI or frontend changes, use the feature in a browser before reporting
+complete" is not a suggestion this project can afford to treat as optional —
+it is the only check in the entire test suite that would have caught this,
+and it isn't a test at all. Confirmed live, end to end, immediately after:
+real search against slurrpfarm.com, real cart, real confirmation, a real
+Razorpay test order (`order_TVeMmRMzE9snYG`, ₹188.10, 13/13 gates), a real
+signed Authorization independently re-verified on the new Evidence screen,
+and a real 6-event tamper-evident audit chain — all from one honest click
+path, not asserted piecemeal by separate tests that never see each other.
+
+## Production relevance
+The most dangerous gap in a payments-adjacent system is not the one a test
+suite disagrees with — it's the one no test suite was ever positioned to
+see, because the seam it lives on (backend correctness vs. frontend wiring)
+isn't a unit the suite is organized around. 360-plus tests passing is not
+the same claim as "the product works," and this project's own README should
+say so plainly rather than let a high test count imply more than it proves.
+
+# F-033 — live subscription proof found an expired token and an SDK cleanup race
+
+## Failure
+A harmless live `SubscriptionAgentRuntime` Shopify search failed with HTTP
+401 because the configured `CLAUDE_CODE_OAUTH_TOKEN` had expired or been
+revoked. While reporting that correct failure, Python also warned that the
+Agent SDK async generator was still running during `aclose()`.
+
+## Cause
+The runtime raised from inside the SDK's `async for` loop as soon as it saw
+the permanent authentication retry event. The exception correctly prevented
+the SDK's ten-attempt retry ladder, but left generator cleanup to event-loop
+shutdown, which raced the SDK's internal work. The credential failure itself
+is external state and cannot be repaired by code.
+
+## Discovery method
+Running the real Agent SDK path with the configured subscription token and a
+public R0 Shopify `search_catalog` tool. No token value or connector payload
+was printed.
+
+## Fix
+On a permanent 401, the runtime now breaks at the yielded retry event,
+explicitly closes the suspended stream, and only then raises
+`SubscriptionAuthFailed`. It still does not retry an invalid credential.
+
+## Regression test
+`tests/test_subscription_auth.py::test_a_401_retry_event_raises_immediately_instead_of_retrying`
+continues to prove fail-fast behavior; the focused runtime suite exercises
+the updated cleanup path. Live completion still requires the user to run
+`claude setup-token` and replace the stale value.
+
+## Lesson
+Fail-fast authentication handling must close the transport cleanly as well as
+return the right error. A green mocked retry test proved policy, but only a
+real SDK run exposed the generator-lifecycle edge case.

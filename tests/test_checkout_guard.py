@@ -3,7 +3,9 @@
 from orderguard.cart_verifier import ApprovedCartLine, CartExpectation
 from orderguard.checkout_guard import (
     CheckoutEvidence,
+    PostPaymentEvidence,
     confirm_cart,
+    evaluate_post_payment_gates,
     evaluate_pre_payment_gates,
     ready_for_checkout,
 )
@@ -184,3 +186,63 @@ def test_the_freshness_window_is_configurable_but_never_optional():
 def test_an_intent_that_was_never_confirmed_has_no_authorization_to_be_fresh():
     gates = evaluate_pre_payment_gates(_intent_with_item(), _expectation(), _cart(), _evidence())
     assert GateName.AUTHORIZATION_FRESH in gates.failed
+
+
+# --- post-payment gates ------------------------------------------------------
+# Regression for a real, reproduced gap: docs/FEATURE_MATRIX.md and the app
+# both claimed "9 post-payment gates, VERIFIED_TESTED" while three of the
+# nine (G_SINGLE_CANDIDATE, G_NO_REFUND, G_NOT_EXPIRED) had no evaluation
+# function at all -- just names in the enum. This is that function, and
+# these are the tests that make the claim true.
+
+def _post_evidence(**changes) -> PostPaymentEvidence:
+    data = {
+        "payment_captured": True,
+        "no_refund": True,
+        "amount_match": True,
+        "currency_match": True,
+        "single_candidate": True,
+        "correlation": True,
+        "order_repairable": True,
+        "not_expired": True,
+        "no_prior_effect": True,
+    }
+    data.update(changes)
+    return PostPaymentEvidence(**data)
+
+
+def test_all_nine_post_payment_gates_can_pass_with_typed_evidence():
+    gates = evaluate_post_payment_gates(_post_evidence())
+    assert gates.allow
+    assert len(gates.passed) == 9
+    assert not gates.failed
+
+
+def test_a_refunded_payment_blocks_capture():
+    gates = evaluate_post_payment_gates(_post_evidence(no_refund=False))
+    assert not gates.allow
+    assert GateName.NO_REFUND in gates.failed
+
+
+def test_an_ambiguous_receipt_match_blocks_capture():
+    gates = evaluate_post_payment_gates(_post_evidence(single_candidate=False))
+    assert not gates.allow
+    assert GateName.SINGLE_CANDIDATE in gates.failed
+
+
+def test_an_expired_purchase_blocks_capture():
+    gates = evaluate_post_payment_gates(_post_evidence(not_expired=False))
+    assert not gates.allow
+    assert GateName.NOT_EXPIRED in gates.failed
+
+
+def test_an_unresolved_lost_order_blocks_capture():
+    gates = evaluate_post_payment_gates(_post_evidence(order_repairable=False))
+    assert not gates.allow
+    assert GateName.ORDER_REPAIRABLE in gates.failed
+
+
+def test_a_prior_effect_blocks_a_second_capture():
+    gates = evaluate_post_payment_gates(_post_evidence(no_prior_effect=False))
+    assert not gates.allow
+    assert GateName.NO_PRIOR_EFFECT in gates.failed

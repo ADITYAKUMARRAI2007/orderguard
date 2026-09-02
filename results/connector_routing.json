@@ -1,0 +1,60 @@
+{
+  "metadata": {
+    "commit": "8c4a77508ab8a17cf47f28741b71249ece3ab815",
+    "timestamp": "2026-09-02T04:43:15.788913+00:00",
+    "seed": 20260831,
+    "model_runtime": "deterministic-offline",
+    "scenario_count": 6,
+    "suite_version": "2.0.0"
+  },
+  "metrics": {
+    "connector_routing_accuracy": 1.0,
+    "invalid_connector_selection_rate": 0.0
+  },
+  "scenarios": [
+    {
+      "name": "public_shopify_read",
+      "expected_connector_ids": [
+        "shopify"
+      ],
+      "actual_connector_ids": [
+        "shopify"
+      ],
+      "correct": true
+    },
+    {
+      "name": "github_disconnected",
+      "expected_connector_ids": [],
+      "actual_connector_ids": [],
+      "correct": true
+    },
+    {
+      "name": "claude_cli_session_not_credential",
+      "expected_connector_ids": [],
+      "actual_connector_ids": [],
+      "correct": true
+    },
+    {
+      "name": "github_connected_owner",
+      "expected_connector_ids": [
+        "github"
+      ],
+      "actual_connector_ids": [
+        "github"
+      ],
+      "correct": true
+    },
+    {
+      "name": "github_expired",
+      "expected_connector_ids": [],
+      "actual_connector_ids": [],
+      "correct": true
+    },
+    {
+      "name": "swiggy_wrong_region",
+      "expected_connector_ids": [],
+      "actual_connector_ids": [],
+      "correct": true
+    }
+  ]
+}
