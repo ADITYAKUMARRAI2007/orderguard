@@ -7,6 +7,7 @@ or whether the request is complete. Those are derived in deterministic code.
 from __future__ import annotations
 
 import re
+import sys
 
 from typing import Any
 
@@ -78,7 +79,9 @@ def compile_intent(
     except LLMUnavailable as exc:
         # The service failed. Saying "I could not understand you" would blame
         # the user for our outage and invite them to rephrase a request that was
-        # perfectly clear (F-017).
+        # perfectly clear (F-017). model_error never reaches the user (it could
+        # leak provider internals) but is worth a server-side trace to debug why.
+        print(f"[intent_compiler] LLMUnavailable: {exc!r} (cause: {exc.__cause__!r})", file=sys.stderr)
         return CompilationResult(
             clarifications=[
                 Clarification(
