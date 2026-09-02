@@ -6,6 +6,7 @@ response shape (an ``items`` list) correctly, in both directions.
 """
 
 import asyncio
+from collections.abc import Callable
 
 import httpx
 import pytest
@@ -16,7 +17,7 @@ KEY_ID = "rzp_test_fake"
 KEY_SECRET = "fake_secret"
 
 
-def _client(handler: httpx.MockTransport | callable) -> RazorpayClient:
+def _client(handler: httpx.MockTransport | Callable) -> RazorpayClient:
     transport = handler if isinstance(handler, httpx.MockTransport) else httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(
         base_url="https://api.razorpay.com/v1", transport=transport,
