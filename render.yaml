@@ -1,0 +1,62 @@
+
+# Render Blueprint — see DEPLOY.md for the exact click-through steps
+# (creating the blueprint, entering secrets, and wiring the two services'
+# URLs together). Real secrets are never in this file: every sensitive
+# envVar below has `sync: false`, which means Render prompts you to type
+# it into their own dashboard — this file never sees or stores it.
+
+services:
+  - type: web
+    name: orderguard-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install uv && uv sync --locked
+    startCommand: uv run uvicorn orderguard.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.15"
+      # Filled in by you, in Render's dashboard, after the service exists —
+      # see DEPLOY.md step "wire the two services together".
+      - key: ALLOWED_ORIGIN
+        sync: false
+      # Razorpay TEST MODE keys only — see .env.example for where to get them.
+      - key: RZP_KEY_ID
+        sync: false
+      - key: RZP_KEY_SECRET
+        sync: false
+      - key: RZP_WEBHOOK_SECRET
+        sync: false
+      # LLM provider for the shopping/agent flow.
+      - key: LLM_PROVIDER
+        value: gemini
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: gemini-2.5-flash
+      # Optional — store search stays functional without it.
+      - key: SEARCH_PROVIDER
+        value: serper
+      - key: SEARCH_API_KEY
+        sync: false
+      # Agent orchestrator. "api" needs ANTHROPIC_API_KEY below;
+      # "subscription" needs CLAUDE_CODE_OAUTH_TOKEN instead (see
+      # .env.example — that token is generated in your OWN terminal via
+      # `claude setup-token`, this project never automates that step).
+      - key: AGENT_RUNTIME
+        value: api
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Encrypts connector bearer tokens at rest. Generate your own with:
+      # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+      - key: CONNECTOR_TOKEN_KEY
+        sync: false
+    disk:
+      # Every SQLite database this app uses (audit, ledger, capability,
+      # authorization + its signing key, connector accounts, memory,
+      # webhook log, connector log, custom connectors) lives under data/
+      # relative to the working directory — one disk mount covers all of
+      # them. Without this, Render's ephemeral filesystem would wipe every
+      # database (including the Ed25519 signing key) on every redeploy.
+      name: orderguard-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1

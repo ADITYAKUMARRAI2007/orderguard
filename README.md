@@ -70,6 +70,14 @@ Razorpay **test-mode** keys only, and generate connector encryption material
 as documented in that file. BYOK Anthropic keys live only in process memory
 and can be forgotten explicitly.
 
+## Deploy
+
+[`DEPLOY.md`](DEPLOY.md) walks through a real, public Render deployment —
+backend + frontend as separate services, one persistent disk for the
+SQLite databases. Same honest scope as running locally: test-mode Razorpay,
+single-tenant, no auth. Real secrets are entered directly into Render's own
+dashboard, never through this repo or an AI assistant.
+
 ## Security boundary
 
 ```text

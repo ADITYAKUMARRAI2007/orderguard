@@ -214,8 +214,15 @@ class ApiError extends Error {
   }
 }
 
+// Empty string in dev (Vite's server.proxy in vite.config.ts forwards /api
+// and /mcp to localhost:8000, so a relative path is correct there). In a
+// production build where the frontend and backend are deployed as separate
+// services (see render.yaml), VITE_API_BASE_URL is set at build time to the
+// backend's real URL — set once, at the build step, never hardcoded here.
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
   });

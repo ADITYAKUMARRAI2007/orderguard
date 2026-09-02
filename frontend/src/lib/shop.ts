@@ -127,8 +127,11 @@ export interface PaymentVerifyResult {
   gate_names_failed: string[];
 }
 
+// Same convention as lib/api.ts's API_BASE — see that file's comment.
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+
 async function post<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
+  const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),

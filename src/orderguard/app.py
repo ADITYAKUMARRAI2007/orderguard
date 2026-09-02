@@ -17,6 +17,7 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from .cart_verifier import ApprovedCartLine, CartExpectation, compare_cart
@@ -118,6 +119,22 @@ from .executor import Rejection as PaymentRejection
 from .websearch import WebResult, WebSearchOutcome, search_web
 
 app = FastAPI(title="OrderGuard", version="0.1.0")
+
+# The frontend is deployed as a SEPARATE origin from this backend (see
+# render.yaml), so the browser enforces CORS on every request. No
+# cookie-based session exists anywhere in this app (session_id is a plain
+# path parameter, never a cookie), so allow_credentials stays False and a
+# wildcard origin is safe here -- there is no session token a third-party
+# page could ride along with a credentialed request. ALLOWED_ORIGIN, set in
+# the real deployment, narrows this to the actual deployed frontend URL
+# once one exists; unset (local dev, `make dev`) falls back to allowing
+# everything, matching the previous no-CORS-restriction behavior exactly.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[os.environ["ALLOWED_ORIGIN"]] if os.environ.get("ALLOWED_ORIGIN") else ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # One database for chat, order history and preferences. Opened once; the module
 # owns it so no request handler can point memory somewhere else.
