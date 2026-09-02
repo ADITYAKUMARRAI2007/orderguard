@@ -247,6 +247,10 @@ class GroqProvider:
             body = response.json()
             text = body["choices"][0]["message"]["content"]
             result = json.loads(text)
+        except httpx.HTTPStatusError as exc:
+            raise LLMUnavailable(
+                f"Groq HTTP {exc.response.status_code}: {exc.response.text[:500]}"
+            ) from exc
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
             raise LLMUnavailable("Groq returned no usable structured response") from exc
         if not isinstance(result, dict):
