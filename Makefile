@@ -20,14 +20,22 @@ shop:
 app:
 	uv run uvicorn orderguard.app:app --reload --port 8000 --env-file .env
 
-# One-command local launch: backend (:8000, auto-reload) and the real React
-# frontend (:5173, Vite) together — Ctrl-C stops both. This is what a fresh
-# clone should run; there is no more server-rendered /app route to open.
+# One-command local launch: FreshCart (:8002), backend (:8000, auto-reload)
+# and the real React frontend (:5173, Vite) together — Ctrl-C stops all
+# three. This is what a fresh clone should run; there is no more
+# server-rendered /app route to open. FreshCart must run alongside the
+# backend, not just be importable — the backend's FreshCart adapter reaches
+# it over HTTP at FRESHCART_URL (default http://127.0.0.1:8002), the same
+# way it reaches every other store. Omitting it here reproduces, locally,
+# the exact failure a first deployment hit for real — see FAILURE_LOG.md
+# F-034.
 dev:
 	@if [ ! -d frontend/node_modules ]; then cd frontend && npm install; fi
-	@echo "Backend:  http://127.0.0.1:8000"
-	@echo "Frontend: http://127.0.0.1:5173  <- open this"
+	@echo "FreshCart: http://127.0.0.1:8002"
+	@echo "Backend:   http://127.0.0.1:8000"
+	@echo "Frontend:  http://127.0.0.1:5173  <- open this"
 	@trap 'kill 0' EXIT INT TERM; \
+	(uv run uvicorn demo_store.app:app --reload --port 8002) & \
 	(uv run uvicorn orderguard.app:app --reload --port 8000 --env-file .env) & \
 	(cd frontend && npm run dev) & \
 	wait

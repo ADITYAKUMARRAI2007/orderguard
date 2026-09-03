@@ -1,9 +1,16 @@
 
 # Render Blueprint — see DEPLOY.md for the exact click-through steps
-# (creating the blueprint, entering secrets, and wiring the two services'
+# (creating the blueprint, entering secrets, and wiring the services'
 # URLs together). Real secrets are never in this file: every sensitive
 # envVar below has `sync: false`, which means Render prompts you to type
 # it into their own dashboard — this file never sees or stores it.
+#
+# Three services, not one. orderguard-freshcart is not optional: it is the
+# demo merchant (demo_store/app.py) that the backend's FreshCart adapter
+# reaches over the network like any other store. Deploying only the backend
+# and frontend leaves FRESHCART_URL pointing at nothing reachable, which
+# fails every real search/checkout with a 500 that looks like a CORS error
+# in the browser — see FAILURE_LOG.md F-034 for exactly that outage.
 
 services:
   - type: web
@@ -15,9 +22,14 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.13.15"
-      # Filled in by you, in Render's dashboard, after the service exists —
-      # see DEPLOY.md step "wire the two services together".
+      # Filled in by you, in Render's dashboard, after the frontend
+      # service(s) exist — comma-separated if you deploy more than one
+      # frontend (e.g. a Render static site AND a Vercel one).
       - key: ALLOWED_ORIGIN
+        sync: false
+      # The demo merchant service below. Fill in once it exists, e.g.
+      # https://orderguard-freshcart.onrender.com — no trailing slash.
+      - key: FRESHCART_URL
         sync: false
       # Razorpay TEST MODE keys only — see .env.example for where to get them.
       - key: RZP_KEY_ID
@@ -26,13 +38,22 @@ services:
         sync: false
       - key: RZP_WEBHOOK_SECRET
         sync: false
-      # LLM provider for the shopping/agent flow.
+      # LLM provider for the shopping/agent flow. Default is Groq, not
+      # Gemini: a fresh Gemini free-tier key was found, live, to be denied
+      # access to every callable model for reasons never diagnosed
+      # (FAILURE_LOG.md F-004) — Groq worked immediately with the same
+      # amount of setup. Both providers are fully supported; this is a
+      # documented default based on what was actually proven to work, not
+      # a preference. Provider/model mismatches now log the real HTTP
+      # status and response body from Render's log stream (F-034) — check
+      # there first if this comes back as a generic "could not reach the
+      # service" error to the user.
       - key: LLM_PROVIDER
-        value: gemini
+        value: groq
       - key: LLM_API_KEY
         sync: false
       - key: LLM_MODEL
-        value: gemini-2.5-flash
+        value: openai/gpt-oss-120b
       # Optional — store search stays functional without it.
       - key: SEARCH_PROVIDER
         value: serper
@@ -42,9 +63,15 @@ services:
       # "subscription" needs CLAUDE_CODE_OAUTH_TOKEN instead (see
       # .env.example — that token is generated in your OWN terminal via
       # `claude setup-token`, this project never automates that step).
+      # If you already have a Claude subscription and no separate API key,
+      # set this to "subscription" and provide CLAUDE_CODE_OAUTH_TOKEN
+      # instead of ANTHROPIC_API_KEY — check /api/runtime/status on the
+      # deployed backend to confirm which credential it actually picked up.
       - key: AGENT_RUNTIME
         value: api
       - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: CLAUDE_CODE_OAUTH_TOKEN
         sync: false
       # Encrypts connector bearer tokens at rest. Generate your own with:
       # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -57,6 +84,20 @@ services:
       # relative to the working directory — one disk mount covers all of
       # them. Without this, Render's ephemeral filesystem would wipe every
       # database (including the Ed25519 signing key) on every redeploy.
+      # NOTE: Render's create-service API does not accept this field, so a
+      # service created via that API (rather than by syncing this blueprint
+      # through the dashboard) will NOT have this disk attached — it must
+      # be added manually afterward under Settings → Disks.
       name: orderguard-data
       mountPath: /opt/render/project/src/data
       sizeGB: 1
+
+  - type: web
+    name: orderguard-freshcart
+    runtime: python
+    plan: free
+    buildCommand: pip install uv && uv sync --locked
+    startCommand: uv run uvicorn demo_store.app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.15"

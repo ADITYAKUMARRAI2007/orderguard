@@ -4,6 +4,11 @@
 
 > The agent can be wrong. The execution cannot be unproven.
 
+**Live**: [orderguard-frontend.onrender.com](https://orderguard-frontend.onrender.com) ·
+[frontend-kappa-rouge-88.vercel.app](https://frontend-kappa-rouge-88.vercel.app)
+(same backend, two frontend hosts — see [Deploy](#deploy)) · backend:
+[orderguard-backend-9191.onrender.com](https://orderguard-backend-9191.onrender.com)
+
 OrderGuard is a deterministic financial-authorization boundary around a
 probabilistic agent. Claude (or any MCP client) may search, read connector
 data, and recommend a candidate — it never holds a Razorpay credential and
@@ -72,11 +77,33 @@ and can be forgotten explicitly.
 
 ## Deploy
 
-[`DEPLOY.md`](DEPLOY.md) walks through a real, public Render deployment —
-backend + frontend as separate services, one persistent disk for the
-SQLite databases. Same honest scope as running locally: test-mode Razorpay,
-single-tenant, no auth. Real secrets are entered directly into Render's own
-dashboard, never through this repo or an AI assistant.
+Live today as **four** separate services, all on the free tier, wired
+together by URL — not a single container:
+
+- `orderguard-backend` (Render, Python/FastAPI) — the only process holding
+  a Razorpay credential.
+- `orderguard-freshcart` (Render, Python/FastAPI) — the demo merchant
+  (`demo_store/app.py`), deployed separately on purpose: it is the one
+  store this project can actually take a payment against, and it needed to
+  be reachable over the network like any other merchant, not imported as a
+  library (see [`FAILURE_LOG.md`](FAILURE_LOG.md) F-034 for the outage this
+  caused the first time it was missed).
+- `orderguard-frontend` (Render static site) and a second static build on
+  Vercel — same code, two hosts, because Render's static-site product has
+  no API-configurable SPA rewrite rule while Vercel applies one from
+  `frontend/vercel.json` automatically; both point at the same backend.
+
+[`DEPLOY.md`](DEPLOY.md) walks through reproducing this from a fresh
+account. Same honest scope as running locally: test-mode Razorpay,
+single-tenant, no auth. Real secrets are entered directly into each
+platform's own dashboard, never through this repo or an AI assistant.
+
+**Known gap**: the live backend does not yet have a persistent disk
+attached, so its SQLite databases (audit chain, ledger, capability store,
+the Ed25519 signing key) do not survive a redeploy — `render.yaml`
+declares the disk `create_web_service`-style deploys don't attach it.
+Fixed by adding a disk in Render's dashboard (Settings → Disks); not yet
+done on the current live instance.
 
 ## Security boundary
 

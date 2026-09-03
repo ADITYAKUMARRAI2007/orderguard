@@ -1845,3 +1845,98 @@ the updated cleanup path. Live completion still requires the user to run
 Fail-fast authentication handling must close the transport cleanly as well as
 return the right error. A green mocked retry test proved policy, but only a
 real SDK run exposed the generator-lifecycle edge case.
+
+# F-034 — "CORS error" in the browser was a masked 500, and the 500 was masking a missing service
+
+## Failure
+The first real deployment to a public host (Render backend + Vercel
+frontend) let every page load and every read-only call succeed. The one
+thing that failed was the one thing the whole project exists to prove:
+searching a real store from Shop. Chrome reported it as
+`Access to fetch ... has been blocked by CORS policy: No
+'Access-Control-Allow-Origin' header is present` — on an origin that a
+`curl` preflight against the same endpoint, run seconds earlier, had
+already proven returns a correct `Access-Control-Allow-Origin` header.
+
+## Cause
+Three independent problems, found by peeling one at a time rather than by
+guessing at the first plausible one:
+
+1. **The CORS error was not a CORS error.** FastAPI's `CORSMiddleware` only
+   attaches CORS headers to a response it gets to send. An unhandled
+   exception that reaches Starlette's default error path can return a bare
+   500 with no CORS headers at all, and Chrome reports the *symptom*
+   (missing header) as if it were the *cause*. Render's own log stream
+   showed the real status: `POST .../items/0/search 500 Internal Server
+   Error`, with a full traceback underneath it — invisible from the browser
+   entirely.
+2. **The traceback's real cause was a design fact I had forgotten while
+   deploying.** `commerce/freshcart.py`'s own module docstring already says
+   FreshCart is "our own demo merchant, run by `demo_store/app.py`" — a
+   second service, not a library import. `FreshCartAdapter.__init__`
+   defaults `FRESHCART_URL` to `http://127.0.0.1:8002`. That default is
+   correct for `make dev` and silently wrong on Render, where nothing is
+   listening on 127.0.0.1:8002 — `demo_store/app.py` had never been
+   deployed as its own service at all. `StoreUnavailable: freshcart: All
+   connection attempts failed` was accurate; it was buried under a
+   generic-looking CORS message with nothing about it as the entry point.
+3. **Once the real store was reachable, the LLM step (a separate, earlier
+   failure in the same session) had the same shape of problem.** `LLM_
+   PROVIDER=gemini` was set with a Groq key pasted into `LLM_API_KEY`, so
+   Google correctly rejected it (`400 API_KEY_INVALID`) — but
+   `intent_compiler.py`'s own `except LLMUnavailable` branch, written to
+   keep provider internals out of the user-facing message (F-017's fix),
+   also discarded `model_error` completely: it was captured in the return
+   value and never logged anywhere. From the outside, an invalid key and a
+   dead network path were indistinguishable.
+
+## Discovery method
+Not guessing from the browser console. For each layer: `list_logs` on the
+live Render service to read the actual HTTP status and traceback behind
+the browser's misleading error; then reading `commerce/freshcart.py`'s own
+docstring, which had already stated the two-service architecture in
+writing. For the LLM layer: added one `print(..., file=sys.stderr)` at the
+exact point `model_error` was being thrown away, redeployed, re-triggered
+the same request, and read the now-real error back from the log stream —
+first `Client error '400 Bad Request'` with no body (still not enough to
+diagnose), then a second, more targeted fix that also captured
+`exc.response.text`, which finally surfaced Google's literal
+`"API key not valid. Please pass a valid API key."`
+
+## Fix
+- Deployed `demo_store/app.py` as its own Render service and pointed the
+  backend's `FRESHCART_URL` at it — the missing piece, not a code change.
+- `LLM_PROVIDER` switched to match the credential that was actually present
+  (`groq`), with a working model name.
+- `AGENT_RUNTIME` was a fourth, related misconfiguration found the same way:
+  set to `api` (needs `ANTHROPIC_API_KEY`, which was never set) while a
+  working `CLAUDE_CODE_OAUTH_TOKEN` sat unused — switched to `subscription`.
+- Both LLM providers (`llm.py`) now log the provider's own HTTP status and
+  response body to stderr on failure. The user-facing message is
+  unchanged — F-017's reasoning still holds, an outage must not blame the
+  user — but the *operator* is no longer flying blind the way I was for
+  the first hour of this session.
+
+## Regression test
+Not code — this class of bug is a deployment-topology fact, not a unit
+correctness fact. The regression is `DEPLOY.md` and `render.yaml` now
+naming `FRESHCART_URL` and its own service explicitly, so the next deploy
+of this project cannot silently skip it the way the first one did.
+
+## Lesson
+A browser's own CORS error message is not evidence about CORS. It is
+evidence that a response arrived without the header the browser expected,
+which a same-origin 500 produces just as reliably as a cross-origin
+misconfiguration does — treat it as "check what actually happened
+server-side" before treating it as a CORS bug at all. Separately: a
+docstring I had written myself, days earlier, already contained the exact
+fact ("run by `demo_store/app.py`") that would have prevented the
+whole detour, and I did not re-read it until the traceback pointed at it.
+
+## Production relevance
+Direct. "It works locally, the deployed version silently can't reach a
+dependency, and the failure surfaces as an unrelated-looking browser error"
+is one of the most common classes of first-deploy incident there is —
+worth the hour it cost here specifically because the honest, generic
+error message (by design, per F-017) meant nothing about the real cause
+was visible without going to the server's own logs.
