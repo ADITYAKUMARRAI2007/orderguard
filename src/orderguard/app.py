@@ -541,8 +541,21 @@ async def search_item(session_id: str, item_index: int) -> ItemSearch:
     # opt-in by name only, never mixed into a blind search across every real
     # store, because its catalogue is synthetic and the rest are not.
     if session.intent.merchant.strip().lower() == "freshcart":
-        async with FreshCartAdapter() as fc:
-            offers = await fc.search(item.requested_product, limit=8)
+        try:
+            async with FreshCartAdapter() as fc:
+                offers = await fc.search(item.requested_product, limit=8)
+        except AdapterError as exc:
+            # Same fail-closed pattern as select_offer / _reread_cart_from_merchant
+            # (F-028): before this, a slow or cold-starting FreshCart reached
+            # FastAPI as an unhandled exception -- no CORS headers on that
+            # response, which the browser reports as a CORS failure with no
+            # hint that the real cause was a timed-out store, not a policy
+            # block (see FAILURE_LOG.md F-034).
+            raise HTTPException(
+                status_code=502,
+                detail=f"FreshCart did not respond while searching. Nothing was "
+                       f"changed. {exc}",
+            ) from exc
         outcome = SearchOutcome(
             query=item.requested_product, quantity=item.quantity,
             budget_minor=session.intent.maximum_total_paise,

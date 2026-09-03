@@ -23,7 +23,12 @@ from .base import AdapterError, CartLine, ObservedCart, Offer, StoreUnavailable
 
 __all__ = ["FreshCartAdapter"]
 
-_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+# 45s / 30s connect, not the original 10s / 5s: on a free-tier host, FreshCart
+# spins down after idle and a cold start alone measured 22.5s in production --
+# comfortably over the old timeout on its own, before the request itself ran.
+# The failure mode was not "the store is down"; it was "the store is starting
+# up and we stopped waiting" (FAILURE_LOG.md F-034 follow-up).
+_TIMEOUT = httpx.Timeout(45.0, connect=30.0)
 
 
 class FreshCartAdapter:
