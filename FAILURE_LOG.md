@@ -2388,6 +2388,27 @@ Direct. Any turn offering more than one eligible connector -- which F-040
 just made routine for every image-attached commerce request -- can hit
 this; the fix generalizes to N connectors, not just the two observed live.
 
+## Addendum -- the prompt fix alone did not hold, and got MORE specific, not less
+Re-verifying F-042's fix on the exact same conversation shape: the model
+again skipped Swiggy Instamart with zero real tool calls (confirmed --
+`attempted_connector_ids: ["shopify"]`, no `ConnectorPayloadError`, no
+error of any kind in Render's logs for that request), but this time
+claimed "**failed to connect** (its token is expired, a real 401 error
+from the connector, not something I chose to skip)... auth token expired
+— 401 invalid_token." More specific and more confident than the original
+"disconnected," despite the prompt fix explicitly forbidding exactly this.
+Worth naming directly: that first prompt fix listed example forbidden
+words ("disconnected, dropped, expired, timed out, failed") as things not
+to claim -- and the model's next fabrication used "expired" almost
+verbatim. Rewrote the prompt (no longer enumerating specific failure
+vocabulary; states the actual epistemic rule instead: no tool call means
+no evidence of *why*, so name no cause at all, not even a real-sounding
+guess) -- but the structural fix, not this wording, is what actually held
+across both reproductions: `attempted_connector_ids` was correct every
+single time regardless of how the model's own prose changed. This is the
+clearest evidence yet that this class of gap needs a code-level ground
+truth, not better-worded persuasion.
+
 # F-042 — F-040's widened eligibility silently narrowed back down on the very next turn, and the model narrated the real discontinuity as a fake failure
 
 ## Failure
