@@ -101,6 +101,25 @@ async def test_without_an_image_commerce_general_does_not_widen_to_swiggy_instam
     assert result.eligible_connector_ids == ["shopify"]
 
 
+async def test_image_context_established_widens_eligibility_without_a_new_image():
+    """Real, live-found gap (2026-09-03, see FAILURE_LOG.md F-042): a
+    continuation reply carries no image of its own even when it's replying
+    within a conversation that started with one. A connector genuinely
+    offered on an earlier turn (visible in the resumed SDK session's own
+    history) must not silently vanish from the tool list on the next turn
+    just because that turn's own ``image`` argument is None -- the model,
+    correctly observing its own tool list shrink, narrated that as the
+    connector having "disconnected" when nothing had failed at all."""
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime()
+    result = await run_agent_turn(
+        message="work address, budget 500", category="COMMERCE_GENERAL",
+        runtime=runtime, accounts=store, image=None, image_context_established=True,
+    )
+    assert set(result.eligible_connector_ids) == {"shopify", "swiggy-instamart"}
+
+
 async def test_attempted_connector_ids_reflects_real_tool_calls_not_all_eligible_ones():
     """Real, live-found gap (2026-09-03, see FAILURE_LOG.md F-041): with
     more than one eligible connector, a turn's own reply text is not

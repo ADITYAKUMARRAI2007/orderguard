@@ -82,6 +82,7 @@ from .agent.custom_connectors import (
 from .agent.cart_proposals import cart_proposals_engine, load_proposal, save_proposal
 from .agent.conversation_sessions import (
     conversation_sessions_engine, load_conversation_session, save_conversation_session,
+    was_image_ever_attached,
 )
 from .agent.eligibility import ConnectorEligibilityEngine
 from .agent.lifecycle import ActionProposal, R3NeverEntersLifecycle, next_status
@@ -1921,6 +1922,13 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
         load_conversation_session(CONVERSATION_SESSIONS_DB, request.session_id, request.continue_category)
         if request.session_id and request.continue_category else None
     )
+    # An earlier turn in this same thread may have attached an image even
+    # though this one didn't — see FAILURE_LOG.md F-042 for why that must
+    # still count for eligibility widening, not just this turn's own image.
+    image_context_established = bool(
+        request.session_id and request.continue_category
+        and was_image_ever_attached(CONVERSATION_SESSIONS_DB, request.session_id, request.continue_category)
+    )
     image = (
         ImageInput(media_type=request.image_media_type, data_base64=request.image_base64)
         if request.image_base64 is not None
@@ -1932,6 +1940,7 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
             continue_category=request.continue_category,
             session_context=session_context,
             image=image,
+            image_context_established=image_context_established,
         )
     except FinancialToolExposureError as exc:
         append_event(AUDIT, "r3_tool_exposure_blocked", {
@@ -1970,7 +1979,10 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
     if request.session_id:
         for step in mission.steps:
             if step.session_context:
-                save_conversation_session(CONVERSATION_SESSIONS_DB, request.session_id, step.category, step.session_context)
+                save_conversation_session(
+                    CONVERSATION_SESSIONS_DB, request.session_id, step.category, step.session_context,
+                    image_attached=image is not None,
+                )
 
     _MISSIONS[mission.mission_id] = mission
     append_event(AUDIT, "mission_created", {

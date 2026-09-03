@@ -138,19 +138,28 @@ async def run_agent_turn(
     max_risk_tier: str = "R0",
     session_context: dict | None = None,
     image: ImageInput | None = None,
+    image_context_established: bool = False,
 ) -> MissionStepResult:
     """One capability's worth of the mission: eligible connector(s) in
     ``category`` are offered to ``runtime``; whatever tool calls it makes are
     normalized and, for commerce, ranked by the existing Decision Council.
     External connector credentials always come from the owner-scoped
     ``ConnectorAccountStore``.
+
+    ``image_context_established`` is True when an EARLIER turn in this same
+    conversation thread attached an image, even though THIS turn's own
+    ``image`` is None -- see FAILURE_LOG.md F-042. Without it, the widened
+    connector set an image turn established silently narrows back down on
+    every continuation reply, which the model (correctly observing its own
+    tool list shrink mid-conversation) then narrates as a connector having
+    failed, when nothing failed at all.
     """
     engine = ConnectorEligibilityEngine(accounts)
     eligible = engine.eligible_for(
         category, runtime_name=runtime.name,
         owner_ref=accounts.owner_ref, max_risk_tier=max_risk_tier,
     )
-    if image is not None:
+    if image is not None or image_context_established:
         seen_ids = {connector.id for connector in eligible}
         for extra_category in _IMAGE_FALLBACK_EXTRA_CATEGORIES.get(category, ()):
             for connector in engine.eligible_for(

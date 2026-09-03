@@ -2387,3 +2387,80 @@ documented tradeoff and starts being a bug with a deadline.
 Direct. Any turn offering more than one eligible connector -- which F-040
 just made routine for every image-attached commerce request -- can hit
 this; the fix generalizes to N connectors, not just the two observed live.
+
+# F-042 — F-040's widened eligibility silently narrowed back down on the very next turn, and the model narrated the real discontinuity as a fake failure
+
+## Failure
+Verifying F-041 with the exact same conversation used to prove F-040: turn
+1 (image attached) correctly widened eligibility to Shopify + Swiggy
+Instamart and called `get_addresses` on Instamart. Turn 2 -- a plain-text
+reply in the SAME conversation, no image of its own -- came back with
+`eligible_connector_ids: ["shopify"]` only, and the model opened with
+"the **Swiggy Instamart connector has disconnected** (its tools are no
+longer available to me)... that's a real connector failure, not a
+choice." Structurally worse than F-041's first occurrence: this time the
+model wasn't guessing about a connector it had access to and skipped --
+Swiggy Instamart genuinely was not offered as a tool this turn at all.
+
+## Cause
+F-040's fix (`_IMAGE_FALLBACK_EXTRA_CATEGORIES`) only checked THIS turn's
+own `image` argument. A continuation reply is, structurally, a fresh call
+to `run_agent_turn` with `image=None` -- decomposition and eligibility are
+recomputed from scratch every turn (deliberate, see `missions.py`'s own
+docstring), so nothing carried forward the fact that an EARLIER turn in
+this exact resumed SDK session had already introduced Swiggy Instamart's
+tools into the conversation. From the model's own point of view, tools it
+had a moment ago were simply gone on the next turn -- a real, observable
+discontinuity it did not invent. What it invented was the explanation
+("disconnected") for a true observation ("this tool disappeared"), rather
+than the actual cause ("this turn's eligibility computation didn't
+include it").
+
+## Fix
+`agent/conversation_sessions.py`'s per-(session_id, category) table gained
+a sticky `image_ever_attached` column -- set once an image is attached to
+a thread, never cleared. `app.py` now also loads
+`was_image_ever_attached(...)` alongside the existing session_context load
+and threads it through `missions.run_mission` /
+`orchestrator.run_agent_turn` as a new `image_context_established` flag,
+which widens eligibility the same way a real `image` argument does. An
+existing turn's own image still ORs into the stored flag on save, so the
+thread only ever gets more permissive, never less, once a real photo was
+part of it.
+
+Also required a schema migration this project's own precedent didn't
+cover: `connector_accounts.py`'s existing SQLite-only migration helper
+explicitly assumes "a fresh Postgres database already has every column
+`create_all` puts there" -- true for a table that has never shipped to
+production. `conversation_sessions.py`'s table HAD already shipped and
+was live on the real Postgres database for about ninety minutes before
+this fix; `_migrate_image_ever_attached_column` now handles both dialects
+(SQLite `PRAGMA table_info` + conditional `ALTER TABLE`, Postgres `ALTER
+TABLE ... ADD COLUMN IF NOT EXISTS`) rather than assuming Postgres is
+always fresh.
+
+## Regression test
+`tests/test_conversation_sessions.py` (new file): the flag persists across
+a fresh `Engine` on the same file (a restart), stays sticky across a later
+save with no image, defaults false, and is scoped correctly per
+(session_id, category). `tests/test_orchestrator.py::test_image_context_established_widens_eligibility_without_a_new_image`:
+`image=None` with `image_context_established=True` still widens
+eligibility the same as a real image would.
+
+## Lesson
+F-040 fixed "the classifier can't see the image." This is the sequel it
+should have anticipated: fixing an eligibility computation to react
+correctly to one signal (an image, this turn) doesn't mean that signal's
+effect should reset every turn just because the deliberate, documented
+"recompute everything fresh each turn" design doesn't itself carry
+context forward. The fix for a stateless-by-design computation that needs
+one piece of state to persist is to persist that one piece explicitly --
+not to make the whole computation stateful.
+
+## Production relevance
+Direct, and this exact migration gap (assuming a Postgres table is always
+fresh) is worth checking for on any FUTURE column added to any table that
+has already shipped -- `connector_accounts.py`'s own migration helper's
+docstring states the fresh-Postgres assumption as if it always holds,
+and after this incident it demonstrably does not, for any table already
+live.
