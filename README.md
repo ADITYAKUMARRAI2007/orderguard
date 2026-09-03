@@ -92,18 +92,27 @@ together by URL — not a single container:
   Vercel — same code, two hosts, because Render's static-site product has
   no API-configurable SPA rewrite rule while Vercel applies one from
   `frontend/vercel.json` automatically; both point at the same backend.
+- **Neon** (free-tier Postgres) — every table this project owns (audit
+  chain, ledger, capability store, signed-authorization records + the
+  Ed25519 signing key, connector accounts, chat memory, webhook log,
+  connector log, custom connectors) lives here in production, via
+  `DATABASE_URL` (`src/orderguard/db.py`).
 
 [`DEPLOY.md`](DEPLOY.md) walks through reproducing this from a fresh
 account. Same honest scope as running locally: test-mode Razorpay,
 single-tenant, no auth. Real secrets are entered directly into each
 platform's own dashboard, never through this repo or an AI assistant.
 
-**Known gap**: the live backend does not yet have a persistent disk
-attached, so its SQLite databases (audit chain, ledger, capability store,
-the Ed25519 signing key) do not survive a redeploy — `render.yaml`
-declares the disk `create_web_service`-style deploys don't attach it.
-Fixed by adding a disk in Render's dashboard (Settings → Disks); not yet
-done on the current live instance.
+**Why Postgres and not a Render disk**: Render's free compute plan does
+not support persistent disks at all — discovered by trying to attach one.
+Every redeploy was wiping every SQLite file, including a real Swiggy OAuth
+connection right after it was created (see
+[`FAILURE_LOG.md`](FAILURE_LOG.md) F-035). The obvious "just use a
+different free host" alternatives (Fly.io, Railway, Koyeb) turned out to
+have dropped free persistent volume storage too, as of this build — Neon's
+free, always-on hosted Postgres was the option that cost nothing and kept
+real durability. Verified live: a deliberate manual redeploy of the
+backend, and the connector accounts made before it were still there after.
 
 ## Security boundary
 

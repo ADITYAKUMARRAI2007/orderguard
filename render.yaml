@@ -31,6 +31,17 @@ services:
       # https://orderguard-freshcart.onrender.com — no trailing slash.
       - key: FRESHCART_URL
         sync: false
+      # A free-tier Postgres connection string (Neon, Supabase, ...). Every
+      # table this app owns moves here instead of a local SQLite file when
+      # this is set — src/orderguard/db.py. Render's free compute plan does
+      # not support persistent disks at all (see the disk block below,
+      # which a create-service API call cannot attach anyway), so without
+      # this every redeploy silently deletes connector OAuth tokens, the
+      # Ed25519 signing key, and everything else under data/ — a real
+      # incident, not a hypothetical one (FAILURE_LOG.md F-035). Leave
+      # unset only for a deploy you don't mind resetting on every push.
+      - key: DATABASE_URL
+        sync: false
       # Razorpay TEST MODE keys only — see .env.example for where to get them.
       - key: RZP_KEY_ID
         sync: false
@@ -78,16 +89,15 @@ services:
       - key: CONNECTOR_TOKEN_KEY
         sync: false
     disk:
-      # Every SQLite database this app uses (audit, ledger, capability,
-      # authorization + its signing key, connector accounts, memory,
-      # webhook log, connector log, custom connectors) lives under data/
-      # relative to the working directory — one disk mount covers all of
-      # them. Without this, Render's ephemeral filesystem would wipe every
-      # database (including the Ed25519 signing key) on every redeploy.
-      # NOTE: Render's create-service API does not accept this field, so a
-      # service created via that API (rather than by syncing this blueprint
-      # through the dashboard) will NOT have this disk attached — it must
-      # be added manually afterward under Settings → Disks.
+      # Superseded by DATABASE_URL above for the free plan, which does not
+      # support disks at all. This block is kept for a paid Render plan
+      # that DOES support disks and where you'd rather use local SQLite
+      # files under data/ than a separate Postgres service — set
+      # DATABASE_URL and this becomes irrelevant either way, since db.py
+      # prefers it. NOTE: Render's create-service API does not accept this
+      # field regardless of plan, so a service created via that API (rather
+      # than by syncing this blueprint through the dashboard) will NOT have
+      # it attached — add it manually under Settings → Disks if you want it.
       name: orderguard-data
       mountPath: /opt/render/project/src/data
       sizeGB: 1

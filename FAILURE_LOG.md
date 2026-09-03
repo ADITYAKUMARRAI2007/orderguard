@@ -1940,3 +1940,76 @@ is one of the most common classes of first-deploy incident there is —
 worth the hour it cost here specifically because the honest, generic
 error message (by design, per F-017) meant nothing about the real cause
 was visible without going to the server's own logs.
+
+# F-035 — A real user connection was deleted by my own next deploy
+
+## Failure
+A user completed real Swiggy OAuth against the deployed backend —
+`instamart` and `food` both went `AUTH_REQUIRED` → `CONNECTED`, confirmed
+by the callback logs and by `/api/agent/connectors`. Two commits later
+(unrelated diagnostic-logging fixes, each triggering Render's auto-deploy)
+the same connectors were back to `AUTH_REQUIRED`. The real login the user
+had just completed was gone.
+
+## Cause
+Render's free compute plan does not support persistent disks at all —
+confirmed by trying to attach one through the dashboard, not assumed. The
+`data/` directory holding every SQLite file this app writes (audit chain,
+ledger, capability store, `authorization_signing_key.pem`, and
+`connector_accounts.db` — the one that mattered here) sits on Render's
+ordinary, ephemeral filesystem. Every redeploy starts the container from
+the built image again; anything written to `data/` after that image was
+built is gone. The Swiggy token was never at risk from anything Swiggy-
+side, or from any bug in the OAuth code — it was deleted by my own next
+`git push`.
+
+## How I proved it
+Read the connector-account status before and after each deploy via
+`/api/agent/connectors`, matched against Render's own deploy timestamps.
+Confirmed the mechanism (not just the symptom) by trying to attach a
+Render disk through the dashboard and reading the actual response: "Disks
+are not supported for free compute plans."
+
+## What I checked before concluding there was no free fix
+"Deploy the backend somewhere else that has a free disk" was the obvious
+alternative, so it was checked rather than assumed impossible: Fly.io (no
+free tier for new accounts as of this build; volumes are billed per-GB
+regardless), Railway (free tier's $1/month credit and 0.5GB volume are not
+enough for an always-on service), Koyeb (a real permanent free web
+service, but volumes explicitly cannot attach to a free/"eco" instance —
+only to its paid Standard tier). None of them solved this for free.
+
+## Fix
+Migrated every module's storage from a direct-file SQLite `create_engine`
+call to a shared helper (`src/orderguard/db.py`) that uses one free,
+always-on hosted Postgres database (Neon) when `DATABASE_URL` is set, and
+falls back to the existing SQLite file otherwise — local dev and the test
+suite, which never set `DATABASE_URL`, are unaffected; 733/733 tests still
+pass unmodified. Also moved the Ed25519 signing key off a raw PEM file (a
+second, separate ephemeral-disk problem Postgres alone would not have
+fixed) into a one-row table in the same database.
+
+Two SQLite-only migrations (`PRAGMA table_info(...)`, used to add columns
+to an old local database without dropping rows) would have raised on
+Postgres outright — guarded to run only under the SQLite dialect, since a
+brand-new Postgres table already has every current column via `create_all`.
+
+## Regression test
+Not a unit test — an infrastructure fact, proven live rather than assumed
+fixed: after deploying the migration, triggered a deliberate manual
+redeploy of the backend and confirmed via `/api/agent/connectors` that the
+Swiggy connections made before it were still `CONNECTED` afterward.
+
+## Lesson
+A fix I described in this repo's own docs ("known gap: no persistent
+disk") sat there, correctly described and completely unfixed, while a real
+user went through a real OAuth login that my own next commit then deleted.
+Writing a limitation down is not the same as prioritizing it — this one
+should have been fixed before it was allowed to cost someone a real login,
+not after.
+
+## Production relevance
+Direct, and not a hypothetical: this deleted a real credential a real
+person had just created, twice, before it was fixed. "Free tier" and
+"stateless between deploys" are not the same claim, and conflating them is
+exactly how a demo's own maintainer becomes the thing that breaks it.

@@ -29,22 +29,42 @@ those secrets never pass through this chat or get written into the repo.
    ```
    Note the URL — the backend needs it in step 2.
 
-## 2. Backend
+## 2. Persistence — a free Postgres database (do this before the backend)
+
+Render's free compute plan does not support persistent disks at all — not
+a small one, not for a fee, not at all (confirmed by trying to attach one
+via the dashboard). Without a real database, every redeploy of the backend
+wipes every SQLite file under `data/`, including connector OAuth tokens
+someone just connected and the Ed25519 signing key — a real incident, not
+a hypothetical one (see [`FAILURE_LOG.md`](FAILURE_LOG.md) F-035). Checked
+the obvious "deploy the backend somewhere else instead" alternatives —
+Fly.io, Railway, Koyeb — none of them offer free persistent volume storage
+either, as of this build. A free hosted Postgres is the option that costs
+nothing and doesn't trade away durability.
+
+1. Create a free project at [neon.tech](https://neon.tech) (or Supabase,
+   or any Postgres host — anything SQLAlchemy/psycopg can reach works, this
+   isn't Neon-specific). No CLI needed if you'd rather click through their
+   dashboard; `npx neonctl auth && npx neonctl projects create` also works
+   if you want it from a terminal.
+2. Copy the connection string it gives you — looks like
+   `postgresql://user:password@host/dbname?sslmode=require`. This is a
+   real credential. Keep it out of chat, screenshots, and the repo.
+3. You'll set it as the backend's `DATABASE_URL` in the next step.
+
+## 3. Backend
 
 1. Push this repo to GitHub (already done).
 2. In Render: **New +** → **Blueprint** → connect this repo. Render reads
    [`render.yaml`](render.yaml) at the repo root and proposes services
-   including `orderguard-backend`, with a 1GB persistent disk for the
-   SQLite databases under `data/`.
-   (If you instead create the backend as a plain **Web Service** rather
-   than syncing the blueprint, Render's service-creation form does not
-   support attaching a disk — add one manually afterward under
-   **Settings → Disks**, `mountPath: /opt/render/project/src/data`, or
-   every SQLite database including the Ed25519 signing key is wiped on the
-   next redeploy.)
+   including `orderguard-backend`.
 3. Render will prompt you to fill in every `sync: false` env var from
    `render.yaml` — **your real values, typed directly into Render's form,
    never shared with me**:
+   - `DATABASE_URL` — the connection string from step 2. Every table this
+     app owns (`src/orderguard/db.py`) moves here instead of a local
+     SQLite file when this is set. Leave it unset only for a throwaway
+     deploy you don't mind resetting on every push.
    - `FRESHCART_URL` — the URL from step 1, no trailing slash.
    - `RZP_KEY_ID`, `RZP_KEY_SECRET` — Razorpay **test-mode** keys
      (dashboard.razorpay.com → Test Mode → API Keys).
@@ -79,7 +99,7 @@ those secrets never pass through this chat or get written into the repo.
    curl https://orderguard-backend.onrender.com/api/runtime/status
    ```
 
-## 3. Frontend
+## 4. Frontend
 
 Two options — same code, pick one or both:
 
@@ -108,7 +128,7 @@ vercel login   # your own browser OAuth, not automatable from here
 vercel --prod --build-env VITE_API_BASE_URL=https://orderguard-backend.onrender.com
 ```
 
-## 4. Wire the frontend(s) to the backend
+## 5. Wire the frontend(s) to the backend
 
 The backend's CORS accepts a **comma-separated list** in `ALLOWED_ORIGIN`
 (see `src/orderguard/app.py`) specifically so it can serve more than one
@@ -121,7 +141,7 @@ allowing everything, fine for testing but worth tightening for real use:
 2. Save — this restarts the backend (no rebuild needed, it's read at
    startup from `os.environ`).
 
-## 5. Verify
+## 6. Verify
 
 Open a frontend URL. Run a real order through Shop end to end and confirm
 the Razorpay Checkout modal opens against your test-mode key — the same
@@ -134,9 +154,8 @@ honestly a local-machine-only feature, not a deployment bug.
 
 ## What this deployment does not attempt
 
-Real auth, multi-tenancy, high availability, a durable hosted database in
-place of SQLite, or real (non-test-mode) payments — see
-[LIMITATIONS.md](LIMITATIONS.md). Free-tier Render web services also spin
-down after inactivity and take a few seconds to wake on the next request;
-worth knowing before a live judge demo, not something this repo's code
-controls.
+Real auth, multi-tenancy, high availability, or real (non-test-mode)
+payments — see [LIMITATIONS.md](LIMITATIONS.md). Free-tier Render web
+services and Neon's free-tier Postgres both spin down after inactivity and
+take a few seconds to wake on the next request; worth knowing before a
+live judge demo, not something this repo's code controls.
