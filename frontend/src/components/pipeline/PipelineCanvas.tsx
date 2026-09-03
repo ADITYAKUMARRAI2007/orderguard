@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
-import type { MissionStep } from "@/lib/api";
+import type { ConnectorResult, MissionStep } from "@/lib/api";
 import { PipelineNode, type NodeStatus } from "./PipelineNode";
 import { VeinConnector, type VeinStatus } from "./VeinConnector";
 import { OfferApproval } from "./OfferApproval";
@@ -42,8 +42,8 @@ function money(paise: number): string {
   return `₹${(paise / 100).toFixed(paise % 100 === 0 ? 0 : 2)}`;
 }
 
-function resultOf(step: MissionStep): { value: string; meta: string; status: NodeStatus } {
-  if (!step.results.length) {
+function resultOf(step: MissionStep, r: ConnectorResult | undefined): { value: string; meta: string; status: NodeStatus } {
+  if (!r) {
     // A step can genuinely succeed with zero tool-call results — the model
     // made no call, or asked a clarifying question instead. Surfacing its
     // own text here is what makes that legible instead of indistinguishable
@@ -53,7 +53,6 @@ function resultOf(step: MissionStep): { value: string; meta: string; status: Nod
     }
     return { value: "—", meta: "", status: step.connector_id ? "idle" : "blocked" };
   }
-  const r = step.results[0];
   const p = r.payload;
   if (p.result_type === "commerce_candidates")
     return { value: `${p.offers.length} OFFER(S)`, meta: `MERCHANT: ${p.merchant}`, status: "ok" };
@@ -72,7 +71,6 @@ function resultOf(step: MissionStep): { value: string; meta: string; status: Nod
 function nodesFor(step: MissionStep): NodeSpec[] {
   const hasConnector = !!step.connector_id;
   const wasEligible = step.eligible_connector_ids.length > 0;
-  const call = step.results[0];
   const isCommerce = step.category.startsWith("COMMERCE");
   const connectorNode: NodeSpec = hasConnector
     ? { kind: "CONNECTOR", value: step.connector_id!, status: "ok", meta: "ELIGIBILITY PASSED" }
@@ -102,12 +100,19 @@ function nodesFor(step: MissionStep): NodeSpec[] {
   }
 
   if (hasConnector) {
-    nodes.push({
-      kind: "TOOL CALL", value: call?.operation ?? "—", status: call ? "ok" : "idle",
-      meta: call ? `RISK ${call.risk_tier} · R3 EXCLUDED` : undefined,
-    });
-    const result = resultOf(step);
-    nodes.push({ kind: "RESULT", value: result.value, status: result.status, meta: result.meta, wide: true });
+    // One TOOL CALL / RESULT pair per real result — a turn that searched
+    // more than once (e.g. an image-derived list with several items) gets
+    // a fully visible chain instead of everything past the first call
+    // being silently dropped from the trace.
+    const calls = step.results.length ? step.results : [undefined];
+    for (const call of calls) {
+      nodes.push({
+        kind: "TOOL CALL", value: call?.operation ?? "—", status: call ? "ok" : "idle",
+        meta: call ? `RISK ${call.risk_tier} · R3 EXCLUDED` : undefined,
+      });
+      const result = resultOf(step, call);
+      nodes.push({ kind: "RESULT", value: result.value, status: result.status, meta: result.meta, wide: true });
+    }
   }
 
   if (step.council) {
@@ -208,8 +213,14 @@ export function PipelineCanvas({ steps, runtime, running, pendingCategories = []
               new key and animates in, in place, rather than the whole trace
               resetting to node zero. */}
           {steps.map((step) => {
-            const call = step.results[0];
             const nodes = nodesFor(step);
+            // Every commerce result in this step gets its own picker — not
+            // just the first. A turn that searched more than once (multiple
+            // items in one request, or an image-derived list) previously
+            // made every offer past the first invisible.
+            const commerceResults: ConnectorResult[] = step.connector_id
+              ? step.results.filter((r) => r.payload.result_type === "commerce_candidates")
+              : [];
             return (
               <div key={step.intent_id} className="flex flex-col gap-1.5">
                 {step.duration_ms > 0 && (
@@ -224,7 +235,7 @@ export function PipelineCanvas({ steps, runtime, running, pendingCategories = []
                   variants={{ show: { transition: { staggerChildren: 0.07 } } }}
                 >
                   {nodes.map((n, ni) => (
-                    <div key={n.kind} className="flex items-center">
+                    <div key={`${n.kind}-${ni}`} className="flex items-center">
                       {ni > 0 && <VeinConnector status={veinStatus(n.status)} />}
                       <PipelineNode
                         kind={n.kind} value={n.value} status={n.status} index={ni}
@@ -233,9 +244,14 @@ export function PipelineCanvas({ steps, runtime, running, pendingCategories = []
                     </div>
                   ))}
                 </motion.div>
-                {call && step.connector_id && call.payload.result_type === "commerce_candidates" && (
-                  <OfferApproval connectorId={step.connector_id} result={call} council={step.council} />
-                )}
+                {commerceResults.map((call) => (
+                  <OfferApproval
+                    key={call.execution_id}
+                    connectorId={step.connector_id!}
+                    result={call}
+                    council={step.council}
+                  />
+                ))}
               </div>
             );
           })}

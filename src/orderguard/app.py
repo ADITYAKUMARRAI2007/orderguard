@@ -79,6 +79,7 @@ from .agent.custom_connectors import (
     discover_tools as discover_custom_tools,
     enable_tool as enable_custom_tool, register_custom_connector,
 )
+from .agent.cart_proposals import cart_proposals_engine, load_proposal, save_proposal
 from .agent.eligibility import ConnectorEligibilityEngine
 from .agent.lifecycle import ActionProposal, R3NeverEntersLifecycle, next_status
 from .agent.mcp_direct_client import DirectMcpCallError, call_tool_directly
@@ -229,8 +230,10 @@ _CONVERSATION_SESSIONS: dict[tuple[str, str], dict] = {}
 # write, not a payment. Each carries the exact tool/arguments it will
 # execute once approved, so what runs is provably what the user saw, never
 # a fresh decision made after the fact. Same LOCAL_SINGLE_USER scope as the
-# stores above.
-_CART_PROPOSALS: dict[str, ActionProposal] = {}
+# stores above. DB-backed (agent/cart_proposals.py), not an in-memory dict —
+# a proposal staged and not yet approved must survive a backend restart the
+# same way every other table here does (FAILURE_LOG.md F-035).
+CART_PROPOSALS_DB = cart_proposals_engine()
 
 
 def _active_agent_runtime() -> AgentRuntime:
@@ -2116,7 +2119,7 @@ def propose_cart_action(request: ProposeCartActionRequest) -> dict:
         # Structurally unreachable today (update_cart is R1 in the registry),
         # but the check stays live rather than trusted-by-construction.
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    _CART_PROPOSALS[proposal.proposal_id] = proposal
+    save_proposal(CART_PROPOSALS_DB, proposal)
     append_event(AUDIT, "cart_action_proposed", {
         "proposal_id": proposal.proposal_id, "connector_id": proposal.connector_id,
         "risk_tier": proposal.risk_tier, "summary": proposal.summary,
@@ -2141,7 +2144,7 @@ async def approve_cart_action(proposal_id: str, request: ApproveCartActionReques
     returned as checkout_url, never through OrderGuard's Razorpay account,
     which only ever settles for OrderGuard's own merchant.
     """
-    proposal = _CART_PROPOSALS.get(proposal_id)
+    proposal = load_proposal(CART_PROPOSALS_DB, proposal_id)
     if proposal is None:
         raise HTTPException(status_code=404, detail="unknown or expired proposal")
     if proposal.status != "PROPOSED":
@@ -2150,10 +2153,12 @@ async def approve_cart_action(proposal_id: str, request: ApproveCartActionReques
     proposal.status = next_status(proposal, user_approved=True)
     if proposal.status != "EXECUTING":
         raise HTTPException(status_code=409, detail="approval did not clear this proposal for execution")
+    save_proposal(CART_PROPOSALS_DB, proposal)
 
     token = ACCOUNTS.bearer_token(proposal.connector_id)
     if not token:
         proposal.status = "FAILED"
+        save_proposal(CART_PROPOSALS_DB, proposal)
         raise HTTPException(status_code=409, detail=f"{proposal.connector_id!r} is not connected")
 
     try:
@@ -2166,10 +2171,12 @@ async def approve_cart_action(proposal_id: str, request: ApproveCartActionReques
             raise HTTPException(status_code=400, detail=f"no cart-write execution wired up for {proposal.connector_id!r}")
     except SwiggyCartError as exc:
         proposal.status = "FAILED"
+        save_proposal(CART_PROPOSALS_DB, proposal)
         append_event(AUDIT, "cart_action_failed", {"proposal_id": proposal_id, "reason": str(exc)})
         raise HTTPException(status_code=502, detail=str(exc)) from None
 
     proposal.status = "SUCCEEDED"
+    save_proposal(CART_PROPOSALS_DB, proposal)
     connector = agent_connector_by_id(proposal.connector_id)
     append_event(AUDIT, "cart_action_succeeded", {
         "proposal_id": proposal_id, "connector_id": proposal.connector_id,

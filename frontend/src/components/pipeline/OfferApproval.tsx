@@ -35,14 +35,29 @@ function formatMoney(paise: number, currency: string): string {
   return `${currency === "INR" ? "₹" : currency + " "}${(paise / 100).toFixed(2)}`;
 }
 
+const MIN_QTY = 1;
+const MAX_QTY = 50; // matches ProposeCartActionRequest.quantity's own ge=1, le=50
+
 export function OfferApproval({ connectorId, result, council }: Props) {
   const [state, setState] = useState<ApprovalState>({ phase: "idle" });
+  // Per-offer, not global — comparing two pack sizes side by side shouldn't
+  // force the same quantity on both. Lazily defaults to 1 per offer key.
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
 
   if (result.payload.result_type !== "commerce_candidates") return null;
   const offers = result.payload.offers;
   if (!offers.length) return null;
 
   const recommendedKey = council?.recommended_id ?? null;
+
+  function quantityFor(offer: ScoredOffer): number {
+    return quantities[offerKey(offer)] ?? MIN_QTY;
+  }
+
+  function setQuantity(offer: ScoredOffer, next: number) {
+    const clamped = Math.min(MAX_QTY, Math.max(MIN_QTY, next));
+    setQuantities((q) => ({ ...q, [offerKey(offer)]: clamped }));
+  }
 
   async function startApproval(offer: ScoredOffer) {
     setState({ phase: "proposing", offer });
@@ -64,7 +79,7 @@ export function OfferApproval({ connectorId, result, council }: Props) {
       const proposal = await api.proposeCartAction({
         connectorId,
         variantId: offer.offer.variant_id,
-        quantity: 1,
+        quantity: quantityFor(offer),
         offerTitle: offer.offer.title,
         offerPriceMinor: offer.offer.price_minor,
       });
@@ -128,6 +143,29 @@ export function OfferApproval({ connectorId, result, council }: Props) {
                   {o.offer.variant_title || "—"} · {formatMoney(o.offer.price_minor, o.offer.currency)}
                   {!o.in_stock && " · OUT OF STOCK"}
                 </div>
+              </div>
+              <div className="shrink-0 flex items-center border-2 border-border">
+                <button
+                  type="button"
+                  disabled={!o.in_stock || busy}
+                  aria-label={`Decrease quantity for ${o.offer.title}`}
+                  onClick={() => setQuantity(o, quantityFor(o) - 1)}
+                  className="w-7 h-7 grid place-items-center text-[13px] hover:bg-border/40 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  −
+                </button>
+                <span className="w-7 text-center text-[13px] tabular-nums select-none">
+                  {quantityFor(o)}
+                </span>
+                <button
+                  type="button"
+                  disabled={!o.in_stock || busy}
+                  aria-label={`Increase quantity for ${o.offer.title}`}
+                  onClick={() => setQuantity(o, quantityFor(o) + 1)}
+                  className="w-7 h-7 grid place-items-center text-[13px] hover:bg-border/40 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  +
+                </button>
               </div>
               <button
                 type="button"
