@@ -9,6 +9,7 @@ the actual tool payload remains available on ``ToolCallEvent.result``.
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
@@ -90,6 +91,19 @@ class ShopifyNormalizer:
         try:
             body = _ShopifySearch.model_validate(data)
         except ValidationError as exc:
+            # Operator-only diagnostic (F-017: user-facing message stays
+            # generic). The exception's own message names only the first
+            # mismatched field/location, not what shape actually arrived --
+            # not enough to root-cause a live incident (see F-037/live
+            # report of this exact error). Printing the real raw shape here
+            # is what actually lets the next occurrence be root-caused
+            # instead of re-guessed.
+            print(
+                f"[agent] ShopifyNormalizer raw call.result type={type(call.result).__name__} "
+                f"repr={repr(call.result)[:2000]!r} decoded data type={type(data).__name__} "
+                f"repr={repr(data)[:2000]!r}",
+                file=sys.stderr,
+            )
             raise _validation_error(call, exc) from None
 
         store = call.resource_ref or call.arguments.get("store")
