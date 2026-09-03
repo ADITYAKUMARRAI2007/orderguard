@@ -5,8 +5,8 @@ independently of any single turn's own image -- both real, live-found gaps
 """
 
 from orderguard.agent.conversation_sessions import (
-    conversation_sessions_engine, load_conversation_session, save_conversation_session,
-    was_image_ever_attached,
+    conversation_sessions_engine, ever_attempted_connector_ids, load_conversation_session,
+    save_conversation_session, was_image_ever_attached,
 )
 
 
@@ -52,3 +52,30 @@ def test_image_attached_flag_is_scoped_to_its_own_session_and_category():
     save_conversation_session(engine, "session-1", "COMMERCE_GENERAL", {"resume": "a"}, image_attached=True)
     assert was_image_ever_attached(engine, "session-2", "COMMERCE_GENERAL") is False
     assert was_image_ever_attached(engine, "session-1", "COMMERCE_GROCERY") is False
+
+
+def test_attempted_connector_ids_accumulate_across_turns_instead_of_replacing():
+    """Real, live-found gap (2026-09-03, see FAILURE_LOG.md F-044): turn 1
+    really searches shopify only; turn 2 really searches swiggy-instamart
+    only. The thread's cumulative "ever attempted" set must contain BOTH,
+    not just whichever turn saved last -- this is what lets a later turn
+    correctly identify an eligible connector as already-verified instead
+    of nudging about it forever."""
+    engine = conversation_sessions_engine(":memory:")
+    save_conversation_session(
+        engine, "session-1", "COMMERCE_GENERAL", {"resume": "a"}, attempted_connector_ids=["shopify"],
+    )
+    assert ever_attempted_connector_ids(engine, "session-1", "COMMERCE_GENERAL") == frozenset({"shopify"})
+
+    save_conversation_session(
+        engine, "session-1", "COMMERCE_GENERAL", {"resume": "b"},
+        attempted_connector_ids=["swiggy-instamart"],
+    )
+    assert ever_attempted_connector_ids(engine, "session-1", "COMMERCE_GENERAL") == frozenset(
+        {"shopify", "swiggy-instamart"}
+    )
+
+
+def test_no_saved_session_has_no_attempted_connectors():
+    engine = conversation_sessions_engine(":memory:")
+    assert ever_attempted_connector_ids(engine, "never-seen", "COMMERCE_GENERAL") == frozenset()

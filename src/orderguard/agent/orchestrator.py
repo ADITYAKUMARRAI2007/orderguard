@@ -139,6 +139,7 @@ async def run_agent_turn(
     session_context: dict | None = None,
     image: ImageInput | None = None,
     image_context_established: bool = False,
+    previously_attempted_connector_ids: frozenset[str] = frozenset(),
 ) -> MissionStepResult:
     """One capability's worth of the mission: eligible connector(s) in
     ``category`` are offered to ``runtime``; whatever tool calls it makes are
@@ -153,6 +154,15 @@ async def run_agent_turn(
     every continuation reply, which the model (correctly observing its own
     tool list shrink mid-conversation) then narrates as a connector having
     failed, when nothing failed at all.
+
+    ``previously_attempted_connector_ids`` is real, cumulative evidence
+    (never the model's own text) of which connectors have actually been
+    called with a real tool request anywhere earlier in this thread -- see
+    FAILURE_LOG.md F-044. A prompt telling the model not to trust a past
+    turn's unverified claim about a connector did not reliably stop it
+    from doing exactly that on the NEXT turn; a deterministic note stating
+    which eligible connectors are still unverified, re-computed and
+    re-stated fresh every turn, is what this argument exists to build.
     """
     engine = ConnectorEligibilityEngine(accounts)
     eligible = engine.eligible_for(
@@ -194,8 +204,30 @@ async def run_agent_turn(
     if not specs:
         return MissionStepResult(category=category, connector_id=None, results=[], council=None)
 
+    # Deterministic, re-computed every turn from real evidence -- never the
+    # model's own prior claims (see this function's own docstring, F-044).
+    # Kept OFF `message` itself: `for_query`/`extract_budget_minor` below
+    # must only ever see the user's real words, not this injected note.
+    # Only fires on a genuine continuation (`session_context` present) --
+    # a brand-new turn has no earlier claim in this thread to be stale, so
+    # there is nothing yet worth correcting; adding the note there anyway
+    # would just be noise on every ordinary first turn.
+    unverified_ids = [c.id for c in eligible if c.id not in previously_attempted_connector_ids]
+    effective_message = message
+    if session_context is not None and unverified_ids:
+        effective_message = (
+            f"{message}\n\n"
+            f"[System note, not from the user: {', '.join(unverified_ids)} "
+            "eligible for this request but not yet called with a real tool "
+            "request anywhere in this conversation -- any earlier claim about "
+            "its status was never actually verified. Attempt it for real this "
+            "turn before saying anything about whether it works.]"
+        )
+
     turn_started = time.monotonic()
-    turn = await runtime.run_turn(SYSTEM_PROMPT, message, specs, session_context=session_context, image=image)
+    turn = await runtime.run_turn(
+        SYSTEM_PROMPT, effective_message, specs, session_context=session_context, image=image,
+    )
     duration_ms = round((time.monotonic() - turn_started) * 1000)
 
     # Extracted from the user's own words, deterministically — never an LLM

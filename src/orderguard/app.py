@@ -81,8 +81,8 @@ from .agent.custom_connectors import (
 )
 from .agent.cart_proposals import cart_proposals_engine, load_proposal, save_proposal
 from .agent.conversation_sessions import (
-    conversation_sessions_engine, load_conversation_session, save_conversation_session,
-    was_image_ever_attached,
+    conversation_sessions_engine, ever_attempted_connector_ids, load_conversation_session,
+    save_conversation_session, was_image_ever_attached,
 )
 from .agent.eligibility import ConnectorEligibilityEngine
 from .agent.lifecycle import ActionProposal, R3NeverEntersLifecycle, next_status
@@ -1929,6 +1929,17 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
         request.session_id and request.continue_category
         and was_image_ever_attached(CONVERSATION_SESSIONS_DB, request.session_id, request.continue_category)
     )
+    # Real, cumulative evidence of which connectors this thread has actually
+    # called before now — never the model's own claims. See F-044: a model
+    # that falsely claimed a connector had failed on one turn kept trusting
+    # its own claim on every later turn instead of re-attempting it, even
+    # though the connector stayed genuinely eligible and connected the whole
+    # time. Threaded through so run_agent_turn can state, as a fact, which
+    # eligible connectors are still unverified this specific turn.
+    previously_attempted_connector_ids = (
+        ever_attempted_connector_ids(CONVERSATION_SESSIONS_DB, request.session_id, request.continue_category)
+        if request.session_id and request.continue_category else frozenset()
+    )
     image = (
         ImageInput(media_type=request.image_media_type, data_base64=request.image_base64)
         if request.image_base64 is not None
@@ -1941,6 +1952,7 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
             session_context=session_context,
             image=image,
             image_context_established=image_context_established,
+            previously_attempted_connector_ids=previously_attempted_connector_ids,
         )
     except FinancialToolExposureError as exc:
         append_event(AUDIT, "r3_tool_exposure_blocked", {
@@ -1982,6 +1994,7 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
                 save_conversation_session(
                     CONVERSATION_SESSIONS_DB, request.session_id, step.category, step.session_context,
                     image_attached=image is not None,
+                    attempted_connector_ids=step.attempted_connector_ids,
                 )
 
     _MISSIONS[mission.mission_id] = mission

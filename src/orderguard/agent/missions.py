@@ -162,6 +162,7 @@ async def run_mission(
     session_context: dict | None = None,
     image: ImageInput | None = None,
     image_context_established: bool = False,
+    previously_attempted_connector_ids: frozenset[str] = frozenset(),
 ) -> MissionResult:
     """``continue_category`` + ``session_context`` are how a reply to an open
     conversation reaches the SAME connector conversation instead of being
@@ -198,6 +199,7 @@ async def run_mission(
             session_context=session_context if continue_category else None,
             image=image,
             image_context_established=image_context_established,
+            previously_attempted_connector_ids=previously_attempted_connector_ids,
         )
         steps.append(step)
     return MissionResult(

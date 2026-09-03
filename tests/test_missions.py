@@ -112,6 +112,10 @@ async def test_continue_category_skips_decomposition_and_threads_session_context
         message="work address", runtime=runtime, accounts=store,
         continue_category="COMMERCE_GROCERY",
         session_context={"resume": "sdk-session-abc"},
+        # Already-verified this turn -- keeps this test focused on session
+        # continuity, not F-044's separate unverified-connector nudge
+        # (covered on its own in test_orchestrator.py).
+        previously_attempted_connector_ids=frozenset({"swiggy-instamart"}),
     )
 
     # One intent, exactly the category asked for — not re-classified.

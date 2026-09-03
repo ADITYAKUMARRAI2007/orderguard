@@ -2547,3 +2547,82 @@ Direct -- found in the user's own real session, not a constructed test.
 Any store with a large enough catalog can trigger this on any query
 broad enough to match many products; this fix makes that store's absence
 from that turn's results the whole cost, not a full search failure.
+
+# F-044 — A model's own earlier false claim about a connector became self-reinforcing for the rest of the conversation
+
+## Failure
+The user's own live session (screenshot, real Mission page): turn 1 (image
+attached) falsely claimed "your Swiggy Instamart connector failed to
+connect this turn (auth token expired)" -- the F-041/F-042 class of
+hallucination, already known. Turn 2, after the user gave a budget, the
+Mission Trace's own `attempted_connector_ids` (real, ground-truth) showed
+`["shopify"]` only -- Swiggy Instamart, genuinely eligible and genuinely
+connected the whole time, was never attempted. The model instead ran 26
+separate Shopify searches across every connected demo store, returning
+armchairs, kurtas, perfumes and lip balm for a grocery list of onion,
+potato, and chili powder -- Shopify simply doesn't sell groceries, so
+none of it was useful, and the one connector that does was never tried.
+
+## Cause
+A prompt fix already existed telling the model not to trust an unverified
+claim, including its own. It did not reliably work, because the model's
+own EARLIER assistant turn, sitting right there in its resumed
+conversation history, reads exactly like something it already checked and
+reported. A general instruction ("don't trust past claims") is easy for a
+model to satisfy in the abstract while still, in practice, treating a
+specific prior statement in its own transcript as settled fact rather
+than re-deriving it. This is a different, harder failure mode than F-041
+(a single turn fabricating a claim) -- it is that fabrication becoming
+load-bearing for every later turn in the same thread, with nothing ever
+forcing a re-check.
+
+## Fix
+Not more persuasion -- a deterministic fact, recomputed and re-stated
+fresh every continuation turn. `conversation_sessions.py` gained a
+second sticky, cumulative field: `attempted_connector_ids_json`, the real
+union of every connector actually called (evidence from orchestrator.py's
+own `attempted_connector_ids`, never the model's text) anywhere earlier in
+the thread. `orchestrator.run_agent_turn` now takes
+`previously_attempted_connector_ids` and, on any continuation turn where
+an eligible connector is NOT in that set, appends an explicit note to the
+message actually sent to the runtime: "X eligible for this request but
+not yet called with a real tool request anywhere in this conversation --
+any earlier claim about its status was never actually verified. Attempt
+it for real this turn..." Kept off the real `message` value used for
+`for_query`/`extract_budget_minor` (both must only ever see the user's
+own words). Only fires on a genuine continuation (`session_context`
+present) -- a brand-new first turn has no stale claim yet to correct, so
+adding the note there would be pure noise.
+
+Required its own schema migration, same as F-042 -- the table had already
+shipped to production with only `image_ever_attached` added; the existing
+`_migrate_columns` helper was generalized to a name->DDL mapping so both
+sticky columns migrate the same way on SQLite and Postgres.
+
+## Regression test
+`tests/test_conversation_sessions.py`: the attempted-connector set
+accumulates across turns instead of being replaced (turn 1 attempts
+shopify, turn 2 attempts swiggy-instamart, both must be remembered).
+`tests/test_orchestrator.py`: the note appears on a continuation with an
+unverified eligible connector; no note when that connector is already in
+`previously_attempted_connector_ids`; no note on a brand-new turn with no
+`session_context` at all (kept consistent with this project's existing
+decomposition tests, which assert the runtime receives the message
+unmodified).
+
+## Lesson
+F-041's fix (surfacing ground truth to the UI) and this one look similar
+but solve different problems. F-041 makes a false claim visible and
+labeled so a human isn't misled by it. This fix is about the MODEL itself
+-- because an LLM can be misled by its own prior output the same way a
+human reading a transcript could, a system that wants a stale claim
+actually corrected needs to put a fresh, unavoidable fact in front of the
+model every time, not just hope a general instruction holds against the
+specific pull of "I already said this."
+
+## Production relevance
+Direct and severe -- this was the mechanism turning one bad turn into a
+permanently degraded conversation: every later reply in the thread
+inherited the original false claim and never recovered on its own,
+producing exactly the "26 irrelevant searches, real connector never
+tried" result the user reported.

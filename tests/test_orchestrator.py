@@ -120,6 +120,57 @@ async def test_image_context_established_widens_eligibility_without_a_new_image(
     assert set(result.eligible_connector_ids) == {"shopify", "swiggy-instamart"}
 
 
+async def test_a_continuation_turn_notes_an_unverified_connector_deterministically():
+    """Real, live-found gap (2026-09-03, see FAILURE_LOG.md F-044): a model
+    that falsely claimed a connector had failed on one turn went on to
+    simply trust its OWN earlier claim on every later turn, never
+    attempting that connector again even though it stayed genuinely
+    eligible and connected -- a prompt telling it not to trust past claims
+    did not reliably stop this. A deterministic note, re-computed fresh
+    every turn from real evidence and appended to the message itself
+    (never `message` verbatim, which for_query/extract_budget_minor must
+    still see unmodified), is what this asserts exists."""
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime()
+    await run_agent_turn(
+        message="under 500", category="COMMERCE_GENERAL", runtime=runtime, accounts=store,
+        session_context={"resume": "sdk-1"}, image_context_established=True,
+        previously_attempted_connector_ids=frozenset(),
+    )
+    sent_message = runtime.calls[0][1]
+    assert sent_message.startswith("under 500")
+    assert "swiggy-instamart" in sent_message
+    assert "not yet called with a real tool request" in sent_message
+
+
+async def test_a_connector_already_attempted_gets_no_note():
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime()
+    await run_agent_turn(
+        message="under 500", category="COMMERCE_GENERAL", runtime=runtime, accounts=store,
+        session_context={"resume": "sdk-1"}, image_context_established=True,
+        previously_attempted_connector_ids=frozenset({"shopify", "swiggy-instamart"}),
+    )
+    assert runtime.calls[0][1] == "under 500"
+
+
+async def test_a_brand_new_turn_gets_no_note_even_with_unattempted_connectors():
+    """No `session_context` means no earlier turn in this thread exists to
+    have made a stale claim -- nothing here is yet worth correcting, and
+    adding the note anyway would just be noise on every ordinary first
+    turn (see this project's existing decomposition tests, which assert
+    the runtime receives the message unmodified)."""
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime()
+    await run_agent_turn(
+        message="order milk", category="COMMERCE_GROCERY", runtime=runtime, accounts=store,
+    )
+    assert runtime.calls[0][1] == "order milk"
+
+
 async def test_attempted_connector_ids_reflects_real_tool_calls_not_all_eligible_ones():
     """Real, live-found gap (2026-09-03, see FAILURE_LOG.md F-041): with
     more than one eligible connector, a turn's own reply text is not

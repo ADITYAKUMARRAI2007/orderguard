@@ -27,7 +27,7 @@ from ..db import make_engine
 
 __all__ = [
     "conversation_sessions_engine", "save_conversation_session", "load_conversation_session",
-    "was_image_ever_attached",
+    "was_image_ever_attached", "ever_attempted_connector_ids",
 ]
 
 _DEFAULT_PATH = Path("data/conversation_sessions.db")
@@ -56,6 +56,20 @@ class ConversationSessionRecord(SQLModel, table=True):
     # earlier in the SAME conversation is what matters, not only the most
     # recent turn.
     image_ever_attached: bool = Field(default=False)
+    # Sticky, cumulative set of connector ids REALLY attempted (a real tool
+    # call, evidence from orchestrator.py's own attempted_connector_ids --
+    # never the model's text) anywhere in this thread so far. Real,
+    # live-found gap (2026-09-03, see FAILURE_LOG.md F-044): a model that
+    # falsely claimed a connector had failed on turn 1 went on to simply
+    # trust its OWN earlier claim on every later turn, never attempting
+    # that connector again even though it stayed genuinely eligible and
+    # connected the whole time -- a prompt telling it not to trust past
+    # claims did not reliably stop it from doing exactly that. This set is
+    # what lets a later turn state, as a fact next to the user's own
+    # message rather than as persuasion, "X has not actually been tried
+    # yet in this conversation" -- a claim the model cannot out-reason
+    # because it is freshly computed and re-stated every turn.
+    attempted_connector_ids_json: str = Field(default="[]")
     updated_at: datetime = Field(default_factory=_now)
 
 
@@ -63,39 +77,44 @@ def conversation_sessions_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
     """SQLite at ``path`` locally; one shared Postgres database when
     DATABASE_URL is set -- see db.py."""
     engine = make_engine(path)
-    _migrate_image_ever_attached_column(engine)
+    _migrate_columns(engine)
     return engine
 
 
-def _migrate_image_ever_attached_column(engine: Engine) -> None:
+def _migrate_columns(engine: Engine) -> None:
     """Patches a table created by an EARLIER version of this module (this
-    one shipped, live, in production, before ``image_ever_attached``
-    existed -- unlike ``connector_accounts.py``'s equivalent migration,
-    this cannot assume "a fresh Postgres database already has every
-    column" holds; the real deployed Postgres table here does not.
-    ``create_all`` only ever adds whole new tables, never new columns on
-    an existing one, on either dialect.
+    one shipped, live, in production, before these columns existed --
+    unlike ``connector_accounts.py``'s equivalent migration, this cannot
+    assume "a fresh Postgres database already has every column" holds;
+    the real deployed Postgres table here does not. ``create_all`` only
+    ever adds whole new tables, never new columns on an existing one, on
+    either dialect.
     """
+    additions = {
+        "image_ever_attached": ("BOOLEAN NOT NULL DEFAULT 0", "BOOLEAN NOT NULL DEFAULT FALSE"),
+        "attempted_connector_ids_json": ("VARCHAR NOT NULL DEFAULT '[]'", "VARCHAR NOT NULL DEFAULT '[]'"),
+    }
     if engine.dialect.name == "sqlite":
         with engine.begin() as connection:
             rows = connection.exec_driver_sql("PRAGMA table_info(conversationsessionrecord)").fetchall()
             existing = {row[1] for row in rows}
-            if "image_ever_attached" not in existing:
-                connection.exec_driver_sql(
-                    "ALTER TABLE conversationsessionrecord "
-                    "ADD COLUMN image_ever_attached BOOLEAN NOT NULL DEFAULT 0"
-                )
+            for name, (sqlite_ddl, _) in additions.items():
+                if name not in existing:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE conversationsessionrecord ADD COLUMN {name} {sqlite_ddl}"
+                    )
     else:
         with engine.begin() as connection:
-            connection.exec_driver_sql(
-                "ALTER TABLE conversationsessionrecord "
-                "ADD COLUMN IF NOT EXISTS image_ever_attached BOOLEAN NOT NULL DEFAULT FALSE"
-            )
+            for name, (_, pg_ddl) in additions.items():
+                connection.exec_driver_sql(
+                    f"ALTER TABLE conversationsessionrecord ADD COLUMN IF NOT EXISTS {name} {pg_ddl}"
+                )
 
 
 def save_conversation_session(
     engine: Engine, session_id: str, category: str, session_context: dict, *,
     image_attached: bool = False,
+    attempted_connector_ids: list[str] | None = None,
 ) -> None:
     with Session(engine) as db:
         row = db.exec(
@@ -108,6 +127,9 @@ def save_conversation_session(
             row = ConversationSessionRecord(session_id=session_id, category=category, session_context_json="{}")
         row.session_context_json = json.dumps(session_context)
         row.image_ever_attached = row.image_ever_attached or image_attached
+        if attempted_connector_ids:
+            existing_ids = set(json.loads(row.attempted_connector_ids_json or "[]"))
+            row.attempted_connector_ids_json = json.dumps(sorted(existing_ids | set(attempted_connector_ids)))
         row.updated_at = _now()
         db.add(row)
         db.commit()
@@ -135,3 +157,16 @@ def was_image_ever_attached(engine: Engine, session_id: str, category: str) -> b
             )
         ).first()
         return bool(row and row.image_ever_attached)
+
+
+def ever_attempted_connector_ids(engine: Engine, session_id: str, category: str) -> frozenset[str]:
+    with Session(engine) as db:
+        row = db.exec(
+            select(ConversationSessionRecord).where(
+                ConversationSessionRecord.session_id == session_id,
+                ConversationSessionRecord.category == category,
+            )
+        ).first()
+        if row is None:
+            return frozenset()
+        return frozenset(json.loads(row.attempted_connector_ids_json or "[]"))
