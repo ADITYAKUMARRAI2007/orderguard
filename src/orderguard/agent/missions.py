@@ -39,7 +39,25 @@ _SPLIT = re.compile(r"\band\b|\bthen\b|,", re.IGNORECASE)
 _KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("DEV_TASK", ("github", "issue", "pull request", "pr ", "repo")),
     ("COMMERCE_FOOD", ("dinner", "lunch", "pizza", "food", "restaurant", "order food")),
-    ("COMMERCE_GROCERY", ("grocery", "groceries", "milk", "instamart", "vegetables")),
+    # Real, live-found gap (2026-09-03, see FAILURE_LOG.md): a real grocery
+    # shopping-list photo -- onion, potato, red chili powder -- classified
+    # as COMMERCE_GENERAL because none of those item names were "grocery"/
+    # "milk"/"instamart"/"vegetables", so the mission never became eligible
+    # for Swiggy Instamart (the only COMMERCE_GROCERY connector) and
+    # searched Shopify's non-grocery demo stores instead. Still a plain
+    # enumeration, not exhaustive by design (see this module's own
+    # docstring on keeping routing deterministic) -- common individual
+    # staple/vegetable/fruit names so an item-by-item list (typed, or read
+    # out of an attached image) routes correctly without the word
+    # "grocery" ever appearing. Deliberately excludes ambiguous brand-name
+    # collisions (e.g. "apple"); one matching word in a clause is enough to
+    # route the whole clause, including any items that aren't in this list.
+    ("COMMERCE_GROCERY", (
+        "grocery", "groceries", "milk", "instamart", "vegetable", "vegetables",
+        "onion", "potato", "tomato", "rice", "atta", "dal", "chili", "chilli",
+        "spice", "spices", "ghee", "sugar", "salt", "egg", "eggs", "bread",
+        "fruit", "fruits", "banana", "mango", "kirana",
+    )),
 )
 
 # A clause opening with one of these reads as a trailing modifier of

@@ -19,6 +19,18 @@ def test_decompose_a_single_clause_dev_request():
     assert decompose("check my github issues") == ["DEV_TASK"]
 
 
+def test_decompose_routes_individual_grocery_item_names_without_the_word_grocery():
+    """Real, live-found gap (2026-09-03, see FAILURE_LOG.md): a real
+    grocery shopping-list photo's items -- onion, potato, red chili powder
+    -- classified as COMMERCE_GENERAL (Shopify's non-grocery demo stores)
+    because none of them were the literal word "grocery"/"milk"/
+    "instamart"/"vegetables". Swiggy Instamart is the only COMMERCE_GROCERY
+    connector, so this is what actually determines which connector a real
+    grocery list reaches -- including one read out of an attached image,
+    since that's classified on text alone same as any typed request."""
+    assert decompose("buy onions and potatoes") == ["COMMERCE_GROCERY", "COMMERCE_GROCERY"]
+
+
 def test_decompose_splits_on_and():
     categories = decompose("order dinner and check my github issues")
     assert categories == ["COMMERCE_FOOD", "DEV_TASK"]
