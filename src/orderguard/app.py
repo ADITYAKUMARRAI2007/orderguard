@@ -80,6 +80,9 @@ from .agent.custom_connectors import (
     enable_tool as enable_custom_tool, register_custom_connector,
 )
 from .agent.cart_proposals import cart_proposals_engine, load_proposal, save_proposal
+from .agent.conversation_sessions import (
+    conversation_sessions_engine, load_conversation_session, save_conversation_session,
+)
 from .agent.eligibility import ConnectorEligibilityEngine
 from .agent.lifecycle import ActionProposal, R3NeverEntersLifecycle, next_status
 from .agent.mcp_direct_client import DirectMcpCallError, call_tool_directly
@@ -221,10 +224,12 @@ _MISSIONS: dict[str, MissionResult] = {}
 # Per-browser-session conversation continuation state: (session_id, category)
 # -> the runtime's own opaque session_context (the Agent SDK's resume id, or
 # the Messages API's replayed history — see runtime/base.py::AgentTurnResult).
-# Same LOCAL_SINGLE_USER scope as _PENDING_SWIGGY_AUTH above: process-local,
-# a restart just means starting a fresh conversation. Never holds a
-# connector credential — only inference-turn continuation state.
-_CONVERSATION_SESSIONS: dict[tuple[str, str], dict] = {}
+# DB-backed (agent/conversation_sessions.py), not an in-memory dict — a
+# redeploy mid-conversation must not silently make the agent "forget" a
+# question it just asked and got answered (FAILURE_LOG.md F-035 class of
+# gap; live-reproduced in an active testing session, not hypothetical).
+# Never holds a connector credential — only inference-turn continuation state.
+CONVERSATION_SESSIONS_DB = conversation_sessions_engine()
 
 # R1 (reversible write) proposals awaiting explicit approval — a real cart
 # write, not a payment. Each carries the exact tool/arguments it will
@@ -1910,8 +1915,8 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
         raise HTTPException(status_code=503, detail=f"agent runtime {runtime.name!r} is not configured")
 
     append_event(AUDIT, "mission_started", {"message": request.message})
-    session_key = (
-        (request.session_id, request.continue_category)
+    session_context = (
+        load_conversation_session(CONVERSATION_SESSIONS_DB, request.session_id, request.continue_category)
         if request.session_id and request.continue_category else None
     )
     image = (
@@ -1923,7 +1928,7 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
         mission = await run_mission(
             message=request.message, runtime=runtime, accounts=ACCOUNTS,
             continue_category=request.continue_category,
-            session_context=_CONVERSATION_SESSIONS.get(session_key) if session_key else None,
+            session_context=session_context,
             image=image,
         )
     except FinancialToolExposureError as exc:
@@ -1963,7 +1968,7 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
     if request.session_id:
         for step in mission.steps:
             if step.session_context:
-                _CONVERSATION_SESSIONS[(request.session_id, step.category)] = step.session_context
+                save_conversation_session(CONVERSATION_SESSIONS_DB, request.session_id, step.category, step.session_context)
 
     _MISSIONS[mission.mission_id] = mission
     append_event(AUDIT, "mission_created", {

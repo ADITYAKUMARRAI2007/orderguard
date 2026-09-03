@@ -69,6 +69,38 @@ async def test_no_image_attached_means_no_image_reaches_the_runtime():
     assert runtime.last_image is None
 
 
+async def test_an_attached_image_with_a_generic_caption_also_reaches_swiggy_instamart():
+    """Real, live-found gap (2026-09-03, see FAILURE_LOG.md): a shopping-
+    list photo's caption ("check this out and add to cart") carries none
+    of missions.py's COMMERCE_GROCERY keywords, so the mission classifies
+    as COMMERCE_GENERAL before the image is ever read -- previously that
+    meant only Shopify's non-grocery demo stores were ever reachable, even
+    with a real, connected Swiggy Instamart account. An image-attached
+    COMMERCE_GENERAL turn must offer Swiggy Instamart too, so the model
+    (which can actually read the photo) has a real grocery connector to
+    search, not just Shopify."""
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime()
+    image = ImageInput(media_type="image/jpeg", data_base64="ZmFrZS1qcGVn")
+    result = await run_agent_turn(
+        message="check this out and add to cart", category="COMMERCE_GENERAL",
+        runtime=runtime, accounts=store, image=image,
+    )
+    assert set(result.eligible_connector_ids) == {"shopify", "swiggy-instamart"}
+
+
+async def test_without_an_image_commerce_general_does_not_widen_to_swiggy_instamart():
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime()
+    result = await run_agent_turn(
+        message="check this out and add to cart", category="COMMERCE_GENERAL",
+        runtime=runtime, accounts=store,
+    )
+    assert result.eligible_connector_ids == ["shopify"]
+
+
 async def test_shopify_keeps_multiple_stores_eligible_until_after_runtime_search():
     runtime = StubAgentRuntime()
     await run_agent_turn(

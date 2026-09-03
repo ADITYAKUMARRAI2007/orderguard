@@ -7,10 +7,23 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlmodel import Session as SQLModelSession, select
 
 from orderguard import app as app_module
+from orderguard.agent.conversation_sessions import ConversationSessionRecord
 
 client = TestClient(app_module.app)
+
+
+def _clear_conversation_sessions() -> None:
+    """Conversation continuation state is DB-backed (a real, shared SQLite
+    file across test runs, same as every other table here) -- tests that
+    reuse a fixed session_id need this instead of the old in-memory dict's
+    ``.clear()`` to stay isolated from a previous run's rows."""
+    with SQLModelSession(app_module.CONVERSATION_SESSIONS_DB) as db:
+        for row in db.exec(select(ConversationSessionRecord)).all():
+            db.delete(row)
+        db.commit()
 
 
 @pytest.fixture(autouse=True)
@@ -249,7 +262,7 @@ def test_a_session_reply_reaches_the_same_conversation_not_a_fresh_one():
         assert kwargs["session_context"] == {"resume": "sdk-session-xyz"}
     finally:
         app_module.RUNTIME_SETTINGS.forget_byok_key()
-        app_module._CONVERSATION_SESSIONS.clear()
+        _clear_conversation_sessions()
 
 
 def test_an_attached_image_reaches_run_mission_as_a_real_imageinput():
@@ -418,4 +431,4 @@ def test_a_different_session_id_never_sees_another_tabs_conversation():
         assert kwargs["session_context"] is None
     finally:
         app_module.RUNTIME_SETTINGS.forget_byok_key()
-        app_module._CONVERSATION_SESSIONS.clear()
+        _clear_conversation_sessions()

@@ -2214,3 +2214,113 @@ Direct and immediate — this was blocking a real user's real request when
 found, not a hypothetical. Worth watching for the same class of gap on
 any other MCP connector's envelope assumption (Swiggy, GitHub) since
 none of them are versioned against this codebase either.
+
+# F-039 — Conversation continuation state was still an in-memory dict, and an active testing session redeployed through it repeatedly
+
+## Failure
+The user reported the agent's mid-conversation memory "many times... it
+refreshes" -- a question it had just asked (delivery address, budget) and
+gotten a real answer to would sometimes come back up again, as if the
+conversation had restarted.
+
+## Cause
+`app.py::_CONVERSATION_SESSIONS` -- the per-`(session_id, category)` map
+of the runtime's own opaque continuation token (the Agent SDK's `resume`
+id) -- was a plain in-process `dict`, explicitly documented in its own
+comment as an accepted LOCAL_SINGLE_USER tradeoff: "a restart just means
+starting a fresh conversation." That tradeoff was written when restarts
+were rare. In this session alone the backend was redeployed five times in
+about an hour while the user was actively mid-conversation testing --
+every one of those silently wiped the dict, so the very next reply landed
+on a runtime call with no `resume` token and no memory of the question it
+had just asked. Exactly the same class of gap `cart_proposals.py` was
+already built to fix (F-035) for a different table, just never applied
+here.
+
+## Fix
+Moved to a DB-backed table (`agent/conversation_sessions.py`), same
+`db.py::make_engine` pattern as every other table in this project --
+Postgres in production, SQLite locally, upsert by `(session_id,
+category)`. `app.py` now calls `load_conversation_session`/
+`save_conversation_session` instead of dict `get`/`__setitem__`; a
+redeploy mid-conversation no longer erases what the agent already asked
+and was told.
+
+## Regression test
+None added -- covered incidentally by the existing
+`test_a_session_reply_reaches_the_same_conversation_not_a_fresh_one` /
+`test_a_different_session_id_never_sees_another_tabs_conversation` in
+`tests/test_agent_endpoints.py`, updated to clear the real DB table
+between runs instead of an in-memory dict (the persistence itself isn't
+what those tests exercise, but they'd fail if wiring the DB in broke
+anything about how continuation is read/written).
+
+## Lesson
+"An acceptable tradeoff" is a claim about a rate of occurrence, not a
+permanent property of the system -- the comment that justified this
+in-memory dict was true when it was written and stopped being true the
+moment this project started shipping several real fixes per hour against
+a live, actively-tested deployment. F-035 already proved this exact
+failure mode once, for a different table, in this same project; the fix
+for a class of bug should generalize to every instance of it discovered
+later, not just the one that happened to get noticed first.
+
+## Production relevance
+Direct. Any LOCAL_SINGLE_USER "process-local state, a restart just starts
+fresh" comment elsewhere in this codebase (`_PENDING_SWIGGY_AUTH`,
+`_MISSIONS`) is the same tradeoff, made under the same now-outdated
+assumption about how often a restart actually happens during active
+development -- worth a deliberate pass, not assumed safe by association
+with this fix.
+
+# F-040 — An image-attached, generically-captioned mission never reached Swiggy Instamart
+
+## Failure
+A real grocery-list photo (uploaded with a plain caption: "check it out
+and put in cart") never became eligible for Swiggy Instamart, even after
+F-038's classifier fix and even with a real, connected Swiggy Instamart
+account -- it stayed on Shopify's non-grocery demo stores for the entire
+conversation.
+
+## Cause
+`missions.py`'s classifier decides a mission's category from the TYPED
+message text alone, before the orchestrator (or any LLM) ever reads an
+attached image -- deliberate, documented, deterministic routing (see that
+module's own docstring). F-038 fixed the case where individual item names
+appear in text. It could not fix a caption that names no items at all --
+there is nothing in "check it out and put in cart" for a keyword list to
+match, no matter how complete that list gets. The category was decided,
+and Shopify was the only connector reachable, before the image describing
+actual grocery items was ever looked at by anything.
+
+## Fix
+Not a smarter classifier -- widened WHICH connectors an image-attached
+COMMERCE_GENERAL turn can reach, in `orchestrator.py::run_agent_turn`, via
+a small explicit `_IMAGE_FALLBACK_EXTRA_CATEGORIES` table (currently
+COMMERCE_GENERAL -> also offer COMMERCE_GROCERY connectors). The
+classifier still can't read the image; the model can, and now has both a
+real grocery connector and Shopify to actually search with once it does,
+instead of being structurally limited to the wrong one before it ever
+saw the photo.
+
+## Regression test
+`tests/test_orchestrator.py`:
+`test_an_attached_image_with_a_generic_caption_also_reaches_swiggy_instamart`
+(with an image, both connectors become eligible) and
+`test_without_an_image_commerce_general_does_not_widen_to_swiggy_instamart`
+(without one, the widening does not fire) -- proves this is gated on the
+image actually being present, not a blanket loosening of COMMERCE_GENERAL.
+
+## Lesson
+F-038 and this one look like the same bug from the outside (a real grocery
+request reaching the wrong connector) but have different root causes and
+needed different fixes -- one is "the classifier doesn't know this word,"
+the other is "the classifier is asked to route something it structurally
+cannot see yet." Conflating them would have shipped a keyword-list fix
+that looked complete against the user's literal test message while still
+failing their actual real-world usage (an image with an ordinary caption).
+
+## Production relevance
+Direct -- this is the exact shape of Part B's headline use case (a photo
+of a shopping list), and was failing for the most common, most honestly-
+captioned version of it, not an edge case.

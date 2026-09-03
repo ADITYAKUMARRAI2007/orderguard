@@ -50,6 +50,28 @@ class ConnectorProvenanceError(RuntimeError):
     """A result's canonical connector/server/resource mapping did not match."""
 
 
+# Real, live-found gap (2026-09-03, see FAILURE_LOG.md): a mission's
+# category is decided deterministically from the TYPED text alone, before
+# any image attached to the same turn is ever read (missions.py's
+# classifier never inspects image bytes -- see that module's own
+# docstring on why routing stays out of the probabilistic layer). A photo
+# of a grocery list with a generic caption ("check this out", "add to
+# cart") carries none of missions.py's COMMERCE_GROCERY keywords in its
+# own text, so it falls to COMMERCE_GENERAL and only ever reaches
+# Shopify's non-grocery demo stores -- never Swiggy Instamart, even though
+# it is connected and is exactly the right connector for what the photo
+# actually shows. Deterministic keyword routing cannot read the image
+# (that would require an LLM call before eligibility is even decided,
+# which this project deliberately avoids), so the fix widens WHICH
+# connectors an image-attached fallback turn can reach instead of trying
+# to guess the category from the image up front: the model itself, given
+# the real image and real search tools for more than one category, is
+# what decides which connector's results actually answer the request.
+_IMAGE_FALLBACK_EXTRA_CATEGORIES: dict[str, tuple[str, ...]] = {
+    "COMMERCE_GENERAL": ("COMMERCE_GROCERY",),
+}
+
+
 @dataclass
 class MissionStepResult:
     category: str
@@ -118,6 +140,16 @@ async def run_agent_turn(
         category, runtime_name=runtime.name,
         owner_ref=accounts.owner_ref, max_risk_tier=max_risk_tier,
     )
+    if image is not None:
+        seen_ids = {connector.id for connector in eligible}
+        for extra_category in _IMAGE_FALLBACK_EXTRA_CATEGORIES.get(category, ()):
+            for connector in engine.eligible_for(
+                extra_category, runtime_name=runtime.name,
+                owner_ref=accounts.owner_ref, max_risk_tier=max_risk_tier,
+            ):
+                if connector.id not in seen_ids:
+                    eligible.append(connector)
+                    seen_ids.add(connector.id)
 
     specs: list[ConnectorInvocationSpec] = []
     for connector in eligible:
