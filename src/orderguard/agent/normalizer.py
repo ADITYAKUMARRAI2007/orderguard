@@ -451,6 +451,16 @@ def _json_text(call: ToolCallEvent, text: str) -> Any:
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
+        # Operator-only diagnostic (F-017), same pattern as
+        # ShopifyNormalizer.normalize's own -- the exception's message
+        # alone ("result text was not JSON") doesn't say what the real
+        # text actually was, which is exactly what root-causing a live
+        # single-block non-JSON result needs.
+        print(
+            f"[agent] _json_text non-JSON result for {call.connector_id}/{call.tool_name}: "
+            f"repr={text[:2000]!r}",
+            file=sys.stderr,
+        )
         raise ConnectorPayloadError(call.connector_id, call.tool_name, "result text was not JSON") from exc
 
 
