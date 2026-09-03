@@ -409,3 +409,29 @@ def test_multiple_text_blocks_with_no_json_object_fails_closed():
     )
     with pytest.raises(ConnectorPayloadError):
         normalize(call, capability="COMMERCE_GENERAL", risk_tier="R0", provenance="stub")
+
+
+def test_an_sdk_truncated_shopify_result_is_skipped_not_a_turn_killing_error():
+    """Real, live-observed regression (2026-09-03, see FAILURE_LOG.md): a
+    Shopify store's own catalog was large enough that the Claude Agent SDK
+    itself -- not this codebase -- substituted the real tool result with a
+    "read this file for the rest" pointer message. This agent has Read
+    deliberately disallowed (subscription_runtime.py), so that instruction
+    can never be followed; there is no real data to recover. Before this
+    fix, that pointer text reached JSON parsing, raised, and discarded
+    every OTHER store's real results from the same turn along with it --
+    this is skipped as informational instead, the same as Swiggy's
+    get_addresses/get_cart calls."""
+    raw = [{
+        "type": "text",
+        "text": "Error: result (100,742 characters) exceeds maximum allowed tokens. "
+        "Output has been saved to /tmp/mcp-shopify-search_catalog-123.txt.\n"
+        "Format: JSON array with schema: [{type: string, text: string}]\n"
+        "Use offset and limit parameters to read specific portions of the file...",
+    }]
+    call = ToolCallEvent(
+        connector_id="shopify", tool_name="search_catalog",
+        arguments={"store": "hugecatalogshop.com"}, result=raw,
+    )
+    result = normalize(call, capability="COMMERCE_GENERAL", risk_tier="R0", provenance="stub")
+    assert result is None

@@ -2485,3 +2485,65 @@ has already shipped -- `connector_accounts.py`'s own migration helper's
 docstring states the fresh-Postgres assumption as if it always holds,
 and after this incident it demonstrably does not, for any table already
 live.
+
+# F-043 — An oversized Shopify search result poisoned the whole turn, discarding every other store's real results with it
+
+## Failure
+The user's own live session (screenshot, real Mission page) HALTED after
+they typed a budget: "Halted before changing anything: connector result
+did not match its verified schema." Real, reproducible -- checked
+Render's own logs for the exact request.
+
+## Cause
+The Claude Agent SDK's own transport, not this codebase, replaces an
+oversized tool result with a file-pointer message when it exceeds an
+internal token cap: *"Error: result (100,742 characters) exceeds maximum
+allowed tokens. Output has been saved to .../tool-results/....txt... You
+MUST read the content from the file..."* One Shopify store's own catalog
+was large enough to trigger this. The pointer text -- not real product
+data -- is what reached `normalizer.py`'s JSON parser, which correctly
+failed on it (it isn't JSON) and raised `ConnectorPayloadError`. That
+exception propagated out of the per-call loop in `orchestrator.py` with
+no isolation, discarding every OTHER store's real, already-normalized
+results from the SAME turn along with the one bad one -- one oversized
+catalog took down the entire search.
+
+Worse: the pointer message instructs the model to read the saved file to
+recover the content, but `Read` is deliberately in
+`subscription_runtime.py`'s `_ALWAYS_DISALLOWED` list -- a real security
+boundary (this agent must never read arbitrary filesystem paths), not an
+oversight. So even if the exception had been survivable, the instruction
+inside it is structurally impossible for this agent to follow. There is
+no way to recover the real data from this specific call; the only honest
+options are "fail this one store" or "fail the whole turn," and it was
+doing the second when it should do the first.
+
+## Fix
+`ShopifyNormalizer.normalize` now detects this exact SDK marker
+(`"exceeds maximum allowed tokens"`, matched directly against the raw
+result -- stable regardless of which envelope shape wraps it) and treats
+it as informational, returning `None` the same way Swiggy's
+`get_addresses`/`get_cart` calls already do, instead of raising. One
+oversized store's real, permanent, retry-proof limitation now costs
+exactly that one store's results for that one turn -- every other
+connector's real search results in the same turn survive.
+
+## Regression test
+`tests/test_normalizer.py::test_an_sdk_truncated_shopify_result_is_skipped_not_a_turn_killing_error`
+-- the exact live-observed pointer message, asserts `normalize()` returns
+`None` rather than raising.
+
+## Lesson
+An external system's own internal limits (here, the Agent SDK's tool-
+result token cap) are not this codebase's to fix, but the BLAST RADIUS of
+hitting one is. The bug was never "Shopify sometimes returns too much
+data" -- that's real and permanent, not something to chase further. The
+bug was treating one unrecoverable call exactly the same as a
+provenance violation or a genuinely malformed fixture: as grounds to
+discard an entire turn's worth of otherwise-real results.
+
+## Production relevance
+Direct -- found in the user's own real session, not a constructed test.
+Any store with a large enough catalog can trigger this on any query
+broad enough to match many products; this fix makes that store's absence
+from that turn's results the whole cost, not a full search failure.

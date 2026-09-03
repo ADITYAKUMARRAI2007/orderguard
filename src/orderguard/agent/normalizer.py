@@ -39,6 +39,16 @@ class ConnectorPayloadError(RuntimeError):
 
 NormalizationError = ConnectorPayloadError
 
+# The Claude Agent SDK's own literal wording when it substitutes a large
+# tool result with a file-pointer message instead of the real content --
+# stable enough to match on directly (see ShopifyNormalizer.normalize's
+# docstring for why this can never be real product data).
+_SDK_TRUNCATED_OUTPUT_MARKER = "exceeds maximum allowed tokens"
+
+
+def _is_sdk_truncated_output(call: ToolCallEvent) -> bool:
+    return _SDK_TRUNCATED_OUTPUT_MARKER in repr(call.result)
+
 
 class _Normalizer(Protocol):
     def normalize(
@@ -84,9 +94,22 @@ class _ShopifySearch(BaseModel):
 class ShopifyNormalizer:
     """Fixture: Shopify Storefront MCP ``search_catalog`` JSON body."""
 
-    def normalize(self, call: ToolCallEvent, *, budget_minor: int | None = None) -> CommerceResult:
+    def normalize(self, call: ToolCallEvent, *, budget_minor: int | None = None) -> CommerceResult | None:
         if call.tool_name != "search_catalog":
             raise ConnectorPayloadError(call.connector_id, call.tool_name, "unsupported operation")
+        if _is_sdk_truncated_output(call):
+            # None means "nothing offer-shaped to report," the same as
+            # Swiggy's informational-only tools -- NOT a failure. Real,
+            # live-observed (2026-09-03, see FAILURE_LOG.md): a single
+            # store's catalog was large enough that the Claude Agent SDK
+            # itself (not this codebase) truncated the tool result into a
+            # "read this file for the rest" pointer message -- but Read is
+            # deliberately disallowed for this agent (subscription_runtime.py's
+            # _ALWAYS_DISALLOWED), so that instruction is structurally
+            # impossible to follow; there is no real data recoverable from
+            # this call. Treating it as an error used to raise and discard
+            # every OTHER store's real results from the same turn too.
+            return None
         data = _decoded_payload(call)
         try:
             body = _ShopifySearch.model_validate(data)
