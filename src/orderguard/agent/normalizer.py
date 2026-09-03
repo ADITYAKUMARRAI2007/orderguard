@@ -422,14 +422,28 @@ def _decoded_payload(call: ToolCallEvent) -> Any:
     raw = call.result
     if isinstance(raw, str):
         return _json_text(call, raw)
-    if (
-        isinstance(raw, list)
-        and len(raw) == 1
-        and isinstance(raw[0], dict)
-        and raw[0].get("type") == "text"
-        and isinstance(raw[0].get("text"), str)
+    if isinstance(raw, list) and raw and all(
+        isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str) for b in raw
     ):
-        return _json_text(call, raw[0]["text"])
+        if len(raw) == 1:
+            return _json_text(call, raw[0]["text"])
+        # Real, live-observed shape (2026-09-03, see FAILURE_LOG.md): the
+        # same MCP tool can return more than one text block in one call --
+        # Shopify's search_catalog started appending a plain-English
+        # deprecation notice alongside its actual JSON body. The real
+        # payload is whichever block actually decodes as a JSON object; a
+        # block that doesn't (a human-readable notice) isn't this tool's
+        # result shape and is skipped rather than treated as the payload.
+        for block in raw:
+            try:
+                decoded = json.loads(block["text"])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(decoded, dict):
+                return decoded
+        raise ConnectorPayloadError(
+            call.connector_id, call.tool_name, "no JSON object found across multiple text blocks"
+        )
     return raw
 
 

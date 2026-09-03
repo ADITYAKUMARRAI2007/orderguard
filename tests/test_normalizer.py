@@ -358,3 +358,54 @@ def test_mcp_text_content_envelope_is_decoded_without_discarding_raw_result():
     assert call.result is raw
     assert result.execution_id == "tool-7"
     assert result.payload.items[0]["number"] == 7
+
+
+def test_a_second_non_json_text_block_does_not_break_decoding():
+    """Real, live-observed regression (2026-09-03, see FAILURE_LOG.md
+    F-037): Shopify's search_catalog started returning a SECOND text block
+    -- a plain-English deprecation notice -- alongside its actual JSON
+    payload, wrapped in the same `[{"type": "text", "text": ...}]` envelope.
+    The single-block fast path can't tell the two apart by position alone;
+    it must find whichever block actually decodes as JSON."""
+    raw = [
+        {"type": "text", "text": '{"products": []}'},
+        {
+            "type": "text",
+            "text": "DEPRECATION NOTICE: This tool is served by the Storefront MCP "
+            "server at /api/mcp and will no longer be accessible after August 31, 2026.",
+        },
+    ]
+    call = ToolCallEvent(
+        connector_id="shopify", tool_name="search_catalog",
+        arguments={"store": "slurrpfarm.com"}, result=raw,
+    )
+    result = normalize(call, capability="COMMERCE_GENERAL", risk_tier="R0", provenance="stub")
+    assert isinstance(result.payload, CommerceResult)
+    assert result.payload.offers == []
+
+
+def test_a_second_non_json_text_block_before_the_real_payload_also_decodes():
+    raw = [
+        {"type": "text", "text": "DEPRECATION NOTICE: not JSON at all"},
+        {"type": "text", "text": '{"products": []}'},
+    ]
+    call = ToolCallEvent(
+        connector_id="shopify", tool_name="search_catalog",
+        arguments={"store": "slurrpfarm.com"}, result=raw,
+    )
+    result = normalize(call, capability="COMMERCE_GENERAL", risk_tier="R0", provenance="stub")
+    assert isinstance(result.payload, CommerceResult)
+    assert result.payload.offers == []
+
+
+def test_multiple_text_blocks_with_no_json_object_fails_closed():
+    raw = [
+        {"type": "text", "text": "just some notice"},
+        {"type": "text", "text": "another plain notice"},
+    ]
+    call = ToolCallEvent(
+        connector_id="shopify", tool_name="search_catalog",
+        arguments={"store": "slurrpfarm.com"}, result=raw,
+    )
+    with pytest.raises(ConnectorPayloadError):
+        normalize(call, capability="COMMERCE_GENERAL", risk_tier="R0", provenance="stub")

@@ -2146,3 +2146,71 @@ specific-sounding claims with no backing tool call, and the UI has no way
 today to tell that turn's `model_text` apart from a turn that actually
 searched. Worth fixing before treating image-upload's multi-turn budget
 flow as production-safe end to end.
+
+# F-038 — A real user's search HALTED because Shopify started returning a second text block the normalizer couldn't unwrap
+
+## Failure
+A real user, live, uploaded a photo of a handwritten grocery list (onion,
+potato, red chili powder, apple — Part B's image-upload feature, working
+correctly), stated no budget, and asked for top-5 recommendations per
+item. The mission HALTED: "connector result did not match its verified
+schema" — no cart write, no invented data, but a real search that should
+have worked did not.
+
+## Cause
+`normalizer.py::_decoded_payload` only unwrapped the MCP text-content
+envelope when it was exactly one block:
+`[{"type": "text", "text": "..."}]` — anything else fell through
+unchanged and got handed straight to `_ShopifySearch.model_validate()`,
+which correctly rejects a raw list as "not a dictionary." Shopify's real
+`search_catalog` tool started returning **two** text blocks in one
+result: the actual JSON payload, and a new plain-English notice —
+"DEPRECATION NOTICE: This tool is served by the Storefront MCP server at
+/api/mcp and will no longer be accessible after August 31, 2026." A
+one-block assumption baked into the unwrapping logic broke the instant a
+real connector's response shape changed, even though nothing about
+*this* codebase changed.
+
+## How I proved it
+Added an operator-only diagnostic log (`normalizer.py`'s
+`ShopifyNormalizer.normalize`, printing the real `call.result` type and a
+truncated repr on a validation failure) and deployed it, specifically so
+the next occurrence could be root-caused from real data instead of
+guessed at. Reproduced the user's exact request against the live deployed
+backend and read the resulting log line directly from Render — it showed
+the literal two-block list, including the deprecation notice text
+verbatim, confirming the shape immediately rather than after another
+guess-and-check cycle.
+
+## Fix
+`_decoded_payload` now handles any number of same-shaped text blocks: for
+more than one, it tries `json.loads` on each and returns the first block
+that decodes into a JSON object, skipping ones that don't (a plain notice
+string fails to parse as JSON and is skipped, not treated as the whole
+payload). If no block decodes to an object, it still fails closed with
+`ConnectorPayloadError`, same as before — this widens what shape is
+accepted, it does not loosen what is required.
+
+## Regression test
+`tests/test_normalizer.py`: `test_a_second_non_json_text_block_does_not_break_decoding`,
+`test_a_second_non_json_text_block_before_the_real_payload_also_decodes`,
+`test_multiple_text_blocks_with_no_json_object_fails_closed` — the exact
+two-block shape observed live, the same shape with block order reversed
+(future-proofing against relying on position), and the true-failure case
+kept failing closed.
+
+## Lesson
+A fixture-strict normalizer is only as good as its assumption about the
+*envelope*, not just the *payload* — this system already validated the
+JSON body strictly (correctly), but had an unvalidated assumption one
+layer up (exactly one content block) that a real, external, unversioned
+API was free to break at any time, and did. The fix in F-037 (a
+`ConnectorPayloadError` propagating cleanly to a HALT with no partial
+write) is exactly why this failed safe instead of silently; the fix here
+is what makes the same real request actually work.
+
+## Production relevance
+Direct and immediate — this was blocking a real user's real request when
+found, not a hypothetical. Worth watching for the same class of gap on
+any other MCP connector's envelope assumption (Swiggy, GitHub) since
+none of them are versioned against this codebase either.
