@@ -30,7 +30,7 @@ from dataclasses import dataclass
 
 from .connector_accounts import ConnectorAccountStore
 from .orchestrator import MissionStepResult, run_agent_turn
-from .runtime.base import AgentRuntime
+from .runtime.base import AgentRuntime, ImageInput
 
 __all__ = ["MissionIntent", "MissionResult", "decompose", "decompose_intents", "run_mission"]
 
@@ -142,6 +142,7 @@ async def run_mission(
     max_risk_tier: str = "R0",
     continue_category: str | None = None,
     session_context: dict | None = None,
+    image: ImageInput | None = None,
 ) -> MissionResult:
     """``continue_category`` + ``session_context`` are how a reply to an open
     conversation reaches the SAME connector conversation instead of being
@@ -155,6 +156,13 @@ async def run_mission(
     ``session_context`` (the runtime's own resume state — see
     ``runtime/base.py::AgentTurnResult``) is threaded straight through,
     skipping decomposition entirely.
+
+    ``image`` (an attached shopping-list photo) is passed to every intent's
+    turn unchanged — decomposition runs on ``message`` text alone, so a
+    typical image-upload request (a short or empty caption) forms one
+    intent anyway, and that one turn is expected to make multiple real
+    searches itself for the several items an image can contain (see
+    prompt.py) rather than this module trying to split the image itself.
     """
     if continue_category:
         intents = [MissionIntent(
@@ -169,6 +177,7 @@ async def run_mission(
             message=intent.text, category=intent.capability, runtime=runtime,
             accounts=accounts, max_risk_tier=max_risk_tier,
             session_context=session_context if continue_category else None,
+            image=image,
         )
         steps.append(step)
     return MissionResult(

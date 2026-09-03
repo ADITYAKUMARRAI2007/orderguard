@@ -240,13 +240,17 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   // Missions / agent orchestrator
-  runMission: (message: string, sessionId?: string, continueCategory?: string | null) =>
+  runMission: (
+    message: string, sessionId?: string, continueCategory?: string | null,
+    image?: { base64: string; mediaType: string } | null,
+  ) =>
     request<MissionRunResponse>("/api/agent/missions/run", {
       method: "POST",
       body: JSON.stringify({
         message,
         ...(sessionId ? { session_id: sessionId } : {}),
         ...(continueCategory ? { continue_category: continueCategory } : {}),
+        ...(image ? { image_base64: image.base64, image_media_type: image.mediaType } : {}),
       }),
     }),
   runAgent: (message: string, category: string) =>

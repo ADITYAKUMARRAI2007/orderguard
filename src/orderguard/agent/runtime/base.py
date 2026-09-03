@@ -14,7 +14,19 @@ from typing import Protocol
 
 from ..tools import ConnectorInvocationSpec
 
-__all__ = ["ToolCallEvent", "AgentTurnResult", "AgentRuntime", "StubAgentRuntime"]
+__all__ = ["ToolCallEvent", "AgentTurnResult", "AgentRuntime", "ImageInput", "StubAgentRuntime"]
+
+
+@dataclass(frozen=True)
+class ImageInput:
+    """One image attached to a user turn — an image-based shopping list,
+    e.g. a photo of a handwritten grocery list. ``media_type`` is a real
+    IANA image MIME type (``image/jpeg``, ``image/png``, ``image/webp``,
+    ``image/gif`` — the four the Messages API documents); ``data_base64``
+    is the raw base64-encoded image bytes, no data-URI prefix."""
+
+    media_type: str
+    data_base64: str
 
 
 @dataclass
@@ -66,6 +78,7 @@ class AgentRuntime(Protocol):
         user: str,
         connectors: list[ConnectorInvocationSpec],
         session_context: dict | None = None,
+        image: ImageInput | None = None,
     ) -> AgentTurnResult: ...
 
 
@@ -85,12 +98,13 @@ class StubAgentRuntime:
         self._scripted = scripted
         self.calls: list[tuple[str, str, list[ConnectorInvocationSpec]]] = []
         self.last_session_context: dict | None = None
+        self.last_image: ImageInput | None = None
 
     @property
     def configured(self) -> bool:
         return True
 
-    async def run_turn(self, system, user, connectors, session_context=None):
+    async def run_turn(self, system, user, connectors, session_context=None, image=None):
         # Exercise the same R3 check both real adapters must run, so a stub-
         # driven test can catch a registry mistake before it ever reaches a
         # real runtime.
@@ -101,6 +115,7 @@ class StubAgentRuntime:
 
         self.calls.append((system, user, list(connectors)))
         self.last_session_context = session_context
+        self.last_image = image
         if self._scripted is not None:
             return self._scripted
         return AgentTurnResult(text="", tool_calls=[], stop_reason="end_turn", runtime=self.name)

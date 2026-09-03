@@ -73,6 +73,48 @@ export function Mission() {
   const [listening, setListening] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const recognitionRef = useRef<any>(null);
+  // A real photo the model actually sees (agent/prompt.py's image
+  // instructions) -- e.g. a shopping list. previewUrl is an object URL for
+  // the thumbnail only; base64/mediaType are what actually goes to the API.
+  const [attachedImage, setAttachedImage] = useState<
+    { base64: string; mediaType: string; previewUrl: string; name: string } | null
+  >(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+  async function handleImageSelect(file: File | undefined) {
+    if (!file) return;
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      setTurns((t) => [...t, {
+        who: "system", error: true,
+        text: `Halted before changing anything: ${file.type || "that file type"} isn't supported — use JPEG, PNG, WebP or GIF.`,
+      }]);
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setTurns((t) => [...t, {
+        who: "system", error: true,
+        text: `Halted before changing anything: image is ${(file.size / 1024 / 1024).toFixed(1)}MB — the limit is 5MB.`,
+      }]);
+      return;
+    }
+    const base64: string = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result as string).split(",")[1] ?? "");
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+    setAttachedImage({
+      base64, mediaType: file.type, previewUrl: URL.createObjectURL(file), name: file.name,
+    });
+  }
+
+  function clearAttachedImage() {
+    if (attachedImage) URL.revokeObjectURL(attachedImage.previewUrl);
+    setAttachedImage(null);
+    if (imageInputRef.current) imageInputRef.current.value = "";
+  }
 
   // Stable for the lifetime of this tab — pairs with app.py's
   // _CONVERSATION_SESSIONS, keyed (session_id, category), so a follow-up
@@ -104,13 +146,21 @@ export function Mission() {
   async function send(text: string) {
     if (!text.trim() || running) return;
     const continuing = replyTarget;
-    setTurns((t) => [...t, { who: "user", text }]);
+    const imageForThisTurn = attachedImage;
+    setTurns((t) => [...t, {
+      who: "user",
+      text: imageForThisTurn ? `${text}\n📎 ${imageForThisTurn.name}` : text,
+    }]);
     setInput("");
     setPending(continuing ? [continuing] : previewCategories(text));
     setRunning(true);
     setReplyTarget(null);
     try {
-      const result = await api.runMission(text, sessionIdRef.current, continuing);
+      const result = await api.runMission(
+        text, sessionIdRef.current, continuing,
+        imageForThisTurn ? { base64: imageForThisTurn.base64, mediaType: imageForThisTurn.mediaType } : null,
+      );
+      clearAttachedImage();
       setRuntimeName(result.runtime);
       // Continuing a paused step resolves IN PLACE — the node that was
       // waiting for this reply becomes the answer, rather than a duplicate
@@ -259,7 +309,45 @@ export function Mission() {
                 }
               }}
             />
+            {attachedImage && (
+              <div className="flex items-center gap-2 mt-2 border-2 border-border px-2 py-1.5">
+                <img
+                  src={attachedImage.previewUrl} alt=""
+                  className="size-8 object-cover border border-border shrink-0"
+                />
+                <span className="label-micro text-muted-foreground truncate flex-1">{attachedImage.name}</span>
+                <button
+                  type="button"
+                  onClick={clearAttachedImage}
+                  aria-label="Remove attached image"
+                  className="label-micro text-muted-foreground hover:text-destructive shrink-0"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             <div className="flex items-center gap-2 mt-2">
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                className="hidden"
+                onChange={(e) => handleImageSelect(e.target.files?.[0])}
+              />
+              <button
+                type="button"
+                onClick={() => imageInputRef.current?.click()}
+                aria-label="Attach a photo — e.g. a shopping list"
+                className={`size-11 border-2 grid place-items-center cursor-pointer transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-signal ${
+                  attachedImage
+                    ? "border-signal text-signal bg-signal/10"
+                    : "border-border hover:border-signal hover:text-signal"
+                }`}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M21.44 11.05l-9.19 9.19a5 5 0 0 1-7.07-7.07l9.19-9.19a3.5 3.5 0 0 1 4.95 4.95l-9.2 9.19a1.5 1.5 0 0 1-2.12-2.12l8.49-8.48" />
+                </svg>
+              </button>
               {SpeechRecognitionCtor && (
                 <button
                   type="button"

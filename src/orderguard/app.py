@@ -19,7 +19,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .cart_verifier import ApprovedCartLine, CartExpectation, compare_cart
 from .checkout_guard import (
@@ -90,7 +90,7 @@ from .agent.orchestrator import (
 )
 from .agent.swiggy_cart import SwiggyCartError, add_to_instamart_cart
 from .agent.runtime.api_runtime import AnthropicApiRuntime, CliManagedConnectorUnsupported
-from .agent.runtime.base import AgentRuntime
+from .agent.runtime.base import AgentRuntime, ImageInput
 from .agent.runtime.subscription_runtime import SubscriptionAgentRuntime, SubscriptionAuthFailed
 from .agent.runtime_settings import RuntimeSettings
 from .agent.ssrf_guard import SSRFRejected
@@ -1722,6 +1722,13 @@ class AgentRunRequest(BaseModel):
     category: str = Field(default="COMMERCE_GENERAL", max_length=64)
 
 
+_ALLOWED_IMAGE_MEDIA_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+# ~6MB of base64 text, comfortably above a 4-5MB real photo (base64 inflates
+# raw bytes by ~4/3) and well under what a single Messages/Agent SDK turn's
+# own request-size limits would reject outright.
+_MAX_IMAGE_BASE64_CHARS = 6_000_000
+
+
 class MissionRunRequest(BaseModel):
     model_config = STRICT
     message: str = Field(min_length=1, max_length=2_000)
@@ -1730,6 +1737,19 @@ class MissionRunRequest(BaseModel):
     # reply like "work address" cannot be safely re-decomposed by keyword.
     session_id: str | None = Field(default=None, max_length=64)
     continue_category: str | None = Field(default=None, max_length=64)
+    # An attached shopping-list photo. Both fields are required together —
+    # a media type with no data (or vice versa) is a malformed request, not
+    # "no image", so it fails validation rather than being silently ignored.
+    image_base64: str | None = Field(default=None, max_length=_MAX_IMAGE_BASE64_CHARS)
+    image_media_type: str | None = Field(default=None, max_length=32)
+
+    @model_validator(mode="after")
+    def _image_fields_are_both_or_neither(self) -> "MissionRunRequest":
+        if (self.image_base64 is None) != (self.image_media_type is None):
+            raise ValueError("image_base64 and image_media_type must both be set, or neither")
+        if self.image_media_type is not None and self.image_media_type not in _ALLOWED_IMAGE_MEDIA_TYPES:
+            raise ValueError(f"image_media_type must be one of {sorted(_ALLOWED_IMAGE_MEDIA_TYPES)}")
+        return self
 
 
 class ApiKeyRequest(BaseModel):
@@ -1894,11 +1914,17 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
         (request.session_id, request.continue_category)
         if request.session_id and request.continue_category else None
     )
+    image = (
+        ImageInput(media_type=request.image_media_type, data_base64=request.image_base64)
+        if request.image_base64 is not None
+        else None
+    )
     try:
         mission = await run_mission(
             message=request.message, runtime=runtime, accounts=ACCOUNTS,
             continue_category=request.continue_category,
             session_context=_CONVERSATION_SESSIONS.get(session_key) if session_key else None,
+            image=image,
         )
     except FinancialToolExposureError as exc:
         append_event(AUDIT, "r3_tool_exposure_blocked", {

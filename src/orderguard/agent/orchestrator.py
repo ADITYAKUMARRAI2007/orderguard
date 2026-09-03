@@ -27,7 +27,7 @@ from .normalizer import normalize
 from .preferences import extract_budget_minor
 from .prompt import SYSTEM_PROMPT
 from .results import CommerceResult, ConnectorResult
-from .runtime.base import AgentRuntime
+from .runtime.base import AgentRuntime, ImageInput
 from .tools import ConnectorInvocationSpec, FinancialToolExposureError
 
 __all__ = [
@@ -105,6 +105,7 @@ async def run_agent_turn(
     accounts: ConnectorAccountStore,
     max_risk_tier: str = "R0",
     session_context: dict | None = None,
+    image: ImageInput | None = None,
 ) -> MissionStepResult:
     """One capability's worth of the mission: eligible connector(s) in
     ``category`` are offered to ``runtime``; whatever tool calls it makes are
@@ -143,7 +144,7 @@ async def run_agent_turn(
         return MissionStepResult(category=category, connector_id=None, results=[], council=None)
 
     turn_started = time.monotonic()
-    turn = await runtime.run_turn(SYSTEM_PROMPT, message, specs, session_context=session_context)
+    turn = await runtime.run_turn(SYSTEM_PROMPT, message, specs, session_context=session_context, image=image)
     duration_ms = round((time.monotonic() - turn_started) * 1000)
 
     # Extracted from the user's own words, deterministically — never an LLM

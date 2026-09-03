@@ -252,6 +252,57 @@ def test_a_session_reply_reaches_the_same_conversation_not_a_fresh_one():
         app_module._CONVERSATION_SESSIONS.clear()
 
 
+def test_an_attached_image_reaches_run_mission_as_a_real_imageinput():
+    from orderguard.agent.missions import MissionResult
+
+    result = MissionResult(mission_id="m1", message="milk", intents=[], steps=[])
+    client.post("/api/runtime/api-key", json={"api_key": "sk-ant-test-key"})
+    try:
+        with patch.object(app_module, "run_mission", new=AsyncMock(return_value=result)) as mocked:
+            resp = client.post("/api/agent/missions/run", json={
+                "message": "order what's in this photo",
+                "image_base64": "ZmFrZS1qcGVn",
+                "image_media_type": "image/jpeg",
+            })
+        assert resp.status_code == 200
+        _args, kwargs = mocked.call_args
+        assert kwargs["image"].media_type == "image/jpeg"
+        assert kwargs["image"].data_base64 == "ZmFrZS1qcGVn"
+    finally:
+        app_module.RUNTIME_SETTINGS.forget_byok_key()
+
+
+def test_no_image_fields_means_no_image_reaches_run_mission():
+    from orderguard.agent.missions import MissionResult
+
+    result = MissionResult(mission_id="m1", message="milk", intents=[], steps=[])
+    client.post("/api/runtime/api-key", json={"api_key": "sk-ant-test-key"})
+    try:
+        with patch.object(app_module, "run_mission", new=AsyncMock(return_value=result)) as mocked:
+            resp = client.post("/api/agent/missions/run", json={"message": "order milk"})
+        assert resp.status_code == 200
+        _args, kwargs = mocked.call_args
+        assert kwargs["image"] is None
+    finally:
+        app_module.RUNTIME_SETTINGS.forget_byok_key()
+
+
+def test_an_image_field_with_no_matching_partner_is_rejected():
+    resp = client.post("/api/agent/missions/run", json={
+        "message": "order what's in this photo", "image_base64": "ZmFrZQ==",
+        # image_media_type deliberately omitted -- malformed, not "no image"
+    })
+    assert resp.status_code == 422
+
+
+def test_an_unsupported_image_media_type_is_rejected():
+    resp = client.post("/api/agent/missions/run", json={
+        "message": "order what's in this photo",
+        "image_base64": "ZmFrZQ==", "image_media_type": "image/svg+xml",
+    })
+    assert resp.status_code == 422
+
+
 def test_propose_cart_action_rejects_an_unregistered_cart_write_tool():
     resp = client.post("/api/agent/cart-actions/propose", json={
         "connector_id": "github", "variant_id": "x", "quantity": 1,

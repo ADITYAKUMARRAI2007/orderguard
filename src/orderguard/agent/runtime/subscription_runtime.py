@@ -45,7 +45,7 @@ from ..tools import (
     CliManagedConnectorUnsupported, ConnectorInvocationSpec,
     allowed_tool_names,
 )
-from .base import AgentTurnResult, ToolCallEvent
+from .base import AgentTurnResult, ImageInput, ToolCallEvent
 
 __all__ = [
     "SubscriptionRuntimeUnavailable", "SubscriptionAuthFailed",
@@ -99,7 +99,7 @@ class SubscriptionAgentRuntime:
 
     async def run_turn(
         self, system: str, user: str, connectors: list[ConnectorInvocationSpec],
-        session_context: dict | None = None,
+        session_context: dict | None = None, image: ImageInput | None = None,
     ) -> AgentTurnResult:
         if not self._oauth_token:
             raise SubscriptionRuntimeUnavailable(
@@ -193,7 +193,36 @@ class SubscriptionAgentRuntime:
             call.result = block.content if block.content is not None else fallback
             call.is_error = bool(block.is_error)
 
-        stream = self._query_fn(prompt=user, options=options)
+        # `query()`'s own signature is `prompt: str | AsyncIterable[dict]` --
+        # a plain string is the common case. An attached image switches to
+        # the streaming dict form so the user turn carries a real Anthropic
+        # content-block list (image + text) instead of only text; verified
+        # live rather than assumed to work (see FAILURE_LOG.md for the
+        # result of that check).
+        prompt: str | object = user
+        if image is not None:
+            async def _image_prompt():
+                yield {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": image.media_type,
+                                    "data": image.data_base64,
+                                },
+                            },
+                            {"type": "text", "text": user},
+                        ],
+                    },
+                    "parent_tool_use_id": None,
+                }
+            prompt = _image_prompt()
+
+        stream = self._query_fn(prompt=prompt, options=options)
         auth_failure = False
         async for message in stream:
             if isinstance(message, SystemMessage) and message.subtype == "init":

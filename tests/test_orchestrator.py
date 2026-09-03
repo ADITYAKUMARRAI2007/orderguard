@@ -8,7 +8,7 @@ import pytest
 from orderguard.agent.orchestrator import (
     ConnectorProvenanceError, IneligibleConnectorSelectionError, run_agent_turn,
 )
-from orderguard.agent.runtime.base import AgentTurnResult, StubAgentRuntime, ToolCallEvent
+from orderguard.agent.runtime.base import AgentTurnResult, ImageInput, StubAgentRuntime, ToolCallEvent
 
 
 def _store():
@@ -45,6 +45,28 @@ async def test_no_connection_at_all_means_no_eligible_connector():
     )
     assert result.connector_id is None
     assert runtime.calls == []
+
+
+async def test_an_attached_image_reaches_the_runtime_unchanged():
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime()
+    image = ImageInput(media_type="image/jpeg", data_base64="ZmFrZS1qcGVn")
+    await run_agent_turn(
+        message="order milk", category="COMMERCE_GROCERY", runtime=runtime,
+        accounts=store, image=image,
+    )
+    assert runtime.last_image is image
+
+
+async def test_no_image_attached_means_no_image_reaches_the_runtime():
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime()
+    await run_agent_turn(
+        message="order milk", category="COMMERCE_GROCERY", runtime=runtime, accounts=store,
+    )
+    assert runtime.last_image is None
 
 
 async def test_shopify_keeps_multiple_stores_eligible_until_after_runtime_search():

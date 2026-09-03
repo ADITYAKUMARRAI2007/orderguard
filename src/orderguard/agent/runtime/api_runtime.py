@@ -20,7 +20,7 @@ from ..tools import (
     CliManagedConnectorUnsupported, ConnectorInvocationSpec,
     allowed_tool_names,
 )
-from .base import AgentTurnResult, ToolCallEvent
+from .base import AgentTurnResult, ImageInput, ToolCallEvent
 
 __all__ = ["AnthropicApiRuntimeUnavailable", "CliManagedConnectorUnsupported", "AnthropicApiRuntime"]
 
@@ -53,7 +53,7 @@ class AnthropicApiRuntime:
 
     async def run_turn(
         self, system: str, user: str, connectors: list[ConnectorInvocationSpec],
-        session_context: dict | None = None,
+        session_context: dict | None = None, image: ImageInput | None = None,
     ) -> AgentTurnResult:
         if not self._api_key:
             raise AnthropicApiRuntimeUnavailable("no Anthropic API key configured")
@@ -87,7 +87,24 @@ class AnthropicApiRuntime:
         # user/assistant message this conversation has had; a fresh
         # conversation passes an empty list.
         history: list[dict] = list((session_context or {}).get("history", []))
-        messages = [*history, {"role": "user", "content": user}]
+        # Image content blocks are a documented, native Messages API shape
+        # (platform.claude.com/docs -> vision) -- a plain string `content`
+        # stays the common case; an attached image switches to the block
+        # list form, image first (the API's own documented ordering).
+        user_content: str | list[dict] = user
+        if image is not None:
+            user_content = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": image.media_type,
+                        "data": image.data_base64,
+                    },
+                },
+                {"type": "text", "text": user},
+            ]
+        messages = [*history, {"role": "user", "content": user_content}]
 
         client = self._client or anthropic.Anthropic(api_key=self._api_key)
         response = client.beta.messages.create(
