@@ -669,6 +669,9 @@ def test_naming_freshcart_routes_to_the_real_adapter_not_shopify(monkeypatch):
         async def add_to_cart(self, variant_id, quantity, cart_id=None):
             return await self.read_cart(cart_id or "orderguard-session")
 
+        async def clear_cart(self, cart_id):
+            return None
+
         async def read_cart(self, cart_id):
             return ObservedCart(
                 merchant="freshcart", cart_id=cart_id,
@@ -695,6 +698,110 @@ def test_naming_freshcart_routes_to_the_real_adapter_not_shopify(monkeypatch):
     })
     assert selected.status_code == 200
     assert selected.json()["observed_cart"]["total_paise"] == 16200
+
+
+def test_reselecting_a_freshcart_offer_replaces_the_old_line_not_adds_to_it(monkeypatch):
+    """Found live: FreshCart's own /add endpoint only ever adds. Picking one
+    offer, then picking a different one for the same item (a normal thing to
+    do after a failed confirmation), left both products in the cart forever
+    -- every later confirm() compared a single-line expectation against a
+    two-line cart and failed, with no way to recover short of a new session.
+    """
+    from orderguard.commerce.base import Offer as CommerceOffer
+
+    app_module._SESSIONS.clear()
+    stub = StubProvider(extra_answers={
+        "freshcart: two litres of milk, budget 500 rupees": {
+            "merchant": "freshcart",
+            "items": [{"requested_product": "milk", "quantity": 2, "unit": "litre"}],
+            "maximum_total_paise": 50000,
+        },
+    })
+    monkeypatch.setattr(app_module, "provider_from_env", lambda: stub)
+
+    class _StatefulFakeFreshCart:
+        """Mirrors demo_store's real behaviour: /add accumulates, nothing
+        clears a line except an explicit clear_cart call. Module-level state
+        keyed by cart_id, so it behaves the same across separate instances
+        the way the real HTTP demo store does across separate requests."""
+
+        _carts: dict[str, dict[str, int]] = {}
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def search(self, query, limit=10, location=None):
+            return [
+                CommerceOffer(
+                    store="freshcart", store_label="FreshCart", product_id="milk_organic",
+                    variant_id="milk_organic", title="Organic Cow Milk 1L", price_minor=9900,
+                    currency="INR", available=True,
+                ),
+                CommerceOffer(
+                    store="freshcart", store_label="FreshCart", product_id="milk_1l",
+                    variant_id="milk_1l", title="Amul Taaza Milk 1L", price_minor=6600,
+                    currency="INR", available=True,
+                ),
+            ]
+
+        async def add_to_cart(self, variant_id, quantity, cart_id=None):
+            cart = self._carts.setdefault(cart_id, {})
+            cart[variant_id] = cart.get(variant_id, 0) + quantity
+            return await self.read_cart(cart_id)
+
+        async def clear_cart(self, cart_id):
+            self._carts.pop(cart_id, None)
+
+        async def read_cart(self, cart_id):
+            prices = {"milk_organic": 9900, "milk_1l": 6600}
+            cart = self._carts.get(cart_id, {})
+            lines = [
+                CartLine(
+                    sku=sku, variant_id=sku, quantity=qty, unit_price_paise=prices[sku],
+                    line_total_paise=prices[sku] * qty,
+                )
+                for sku, qty in cart.items()
+            ]
+            total = sum(line.line_total_paise for line in lines)
+            return ObservedCart(
+                merchant="freshcart", cart_id=cart_id, lines=lines,
+                subtotal_paise=total, delivery_paise=0, total_paise=total,
+            )
+
+    monkeypatch.setattr(app_module, "FreshCartAdapter", _StatefulFakeFreshCart)
+    client = TestClient(app_module.app)
+
+    session_id = client.post("/api/sessions", json={
+        "user_id": "u1", "request_text": "freshcart: two litres of milk, budget 500 rupees",
+    }).json()["session_id"]
+    client.post(f"/api/sessions/{session_id}/items/0/search")
+
+    first = client.post(f"/api/sessions/{session_id}/items/0/select", json={
+        "offer_key": "freshcart|milk_organic", "explicit_user_selection": True,
+    })
+    assert first.status_code == 200
+    assert [l["sku"] for l in first.json()["observed_cart"]["lines"]] == ["milk_organic"]
+
+    second = client.post(f"/api/sessions/{session_id}/items/0/select", json={
+        "offer_key": "freshcart|milk_1l", "explicit_user_selection": True,
+    })
+    assert second.status_code == 200
+    # The whole point: only the NEW choice, never both.
+    lines = second.json()["observed_cart"]["lines"]
+    assert [l["sku"] for l in lines] == ["milk_1l"]
+    assert lines[0]["quantity"] == 2
+
+    confirmed = client.post(f"/api/sessions/{session_id}/confirm")
+    assert confirmed.json()["intent"] is not None, (
+        "a clean re-selection must be confirmable, not permanently blocked "
+        "by a line the user abandoned"
+    )
 
 
 def test_freshcart_with_nothing_in_stock_explains_and_offers_the_web(monkeypatch):

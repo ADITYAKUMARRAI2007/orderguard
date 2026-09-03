@@ -68,6 +68,15 @@ class FreshCartAdapter:
             raise StoreUnavailable(f"freshcart: {exc}") from exc
         return self._read(response)
 
+    async def _delete(self, path: str) -> dict:
+        if self._client is None:
+            raise AdapterError("adapter used outside its context manager")
+        try:
+            response = await self._client.delete(path)
+        except httpx.HTTPError as exc:
+            raise StoreUnavailable(f"freshcart: {exc}") from exc
+        return self._read(response)
+
     def _read(self, response: httpx.Response) -> dict:
         if response.status_code >= 500:
             raise StoreUnavailable(f"freshcart: HTTP {response.status_code}")
@@ -106,6 +115,16 @@ class FreshCartAdapter:
         cart_id = cart_id or "orderguard-session"
         await self._post(f"/api/cart/{cart_id}/add", json={"sku": variant_id, "quantity": quantity})
         return await self.read_cart(cart_id)
+
+    async def clear_cart(self, cart_id: str) -> None:
+        """The store's `add` endpoint only ever adds -- there is no 'replace'.
+        A caller re-selecting a different offer for an item it already added
+        must clear first, or the abandoned line stays in the cart forever and
+        every later confirmation fails cart verification against a cart the
+        user never actually approved (found live: re-picking a product after
+        a failed confirm left both products in the cart, and no amount of
+        retrying could ever match a single-line expectation again)."""
+        await self._delete(f"/api/cart/{cart_id}")
 
     async def read_cart(self, cart_id: str) -> ObservedCart:
         body = await self._get(f"/api/cart/{cart_id}")

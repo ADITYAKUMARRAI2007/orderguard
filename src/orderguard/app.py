@@ -693,10 +693,31 @@ async def select_offer(
         cart_id = f"orderguard-{session_id}"
     try:
         async with adapter:
-            written = await adapter.add_to_cart(offer.variant_id, quantity, cart_id)
-            # Separate request: writes are never treated as evidence of what the
-            # merchant ultimately put in the cart.
-            observed = await adapter.read_cart(written.cart_id)
+            if offer.store == "freshcart":
+                # FreshCart's own /add endpoint only ever adds -- there is no
+                # "replace this line" call. Re-selecting a different offer for
+                # an item already chosen once (a normal thing to do after a
+                # failed confirmation, or just changing your mind) would
+                # otherwise leave the abandoned product sitting in the cart
+                # forever: every later confirm() then compares a single-line
+                # expectation against a cart with two products in it and
+                # fails, permanently, with no way for the user to recover
+                # short of starting an entirely new session. Found live.
+                # Clear first, then re-add every item this session has
+                # selected so far (the new one included) so the observed
+                # cart always matches the full, current set of choices.
+                await adapter.clear_cart(cart_id)
+                selections = dict(session.selected_by_item)
+                selections[item_index] = offer
+                for index, chosen in sorted(selections.items()):
+                    qty = session.intent.items[index].quantity
+                    written = await adapter.add_to_cart(chosen.variant_id, qty, cart_id)
+                observed = await adapter.read_cart(written.cart_id)
+            else:
+                written = await adapter.add_to_cart(offer.variant_id, quantity, cart_id)
+                # Separate request: writes are never treated as evidence of what the
+                # merchant ultimately put in the cart.
+                observed = await adapter.read_cart(written.cart_id)
     except AdapterError as exc:
         # Fail closed, on purpose, with a message instead of a stack trace.
         # Before this, a store going down mid-write reached FastAPI as an
