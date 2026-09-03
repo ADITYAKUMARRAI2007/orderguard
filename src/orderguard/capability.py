@@ -69,8 +69,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import Engine, update
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Field, Session, SQLModel, select
+
+from .db import make_engine
 
 __all__ = [
     "ExecutionCapability", "capability_engine",
@@ -142,23 +143,13 @@ class ExecutionCapability(SQLModel, table=True):
 
 
 def capability_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
-    """Same shape as ledger.ledger_engine — see its docstring for why
-    in-memory SQLite needs StaticPool and check_same_thread=False. The
-    latter matters here specifically: the concurrent-consumption test drives
-    this engine from multiple OS threads at once via asyncio.to_thread, and
-    a single shared SQLite connection must accept that."""
-    if path == ":memory:":
-        engine = create_engine(
-            "sqlite://", connect_args={"check_same_thread": False},
-            poolclass=StaticPool, echo=False,
-        )
-    else:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(
-            f"sqlite:///{path}", connect_args={"check_same_thread": False}, echo=False,
-        )
-    SQLModel.metadata.create_all(engine)
-    return engine
+    """SQLite at ``path`` locally; one shared Postgres database when
+    DATABASE_URL is set — see db.py. In-memory SQLite still needs StaticPool
+    and check_same_thread=False regardless (db.py handles that): the
+    concurrent-consumption test drives this engine from multiple OS threads
+    at once via asyncio.to_thread, and a single shared SQLite connection
+    must accept that."""
+    return make_engine(path)
 
 
 def issue_capability(

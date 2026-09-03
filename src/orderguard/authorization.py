@@ -44,20 +44,19 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Engine
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Field, Session, SQLModel, select
 
 from .audit import canonical_json
 from .checkout_guard import DEFAULT_AUTHORIZATION_TTL
+from .db import make_engine
 
 __all__ = [
-    "Authorization", "AuthorizationConsumption",
+    "Authorization", "AuthorizationConsumption", "SigningKeyRecord",
     "load_or_create_signing_key", "issue_authorization", "verify_authorization",
     "is_expired", "authorization_db_engine", "consume_authorization", "get_consumption",
 ]
 
 STRICT = ConfigDict(extra="forbid", frozen=True)
-_DEFAULT_KEY_PATH = Path("data/authorization_signing_key.pem")
 _DEFAULT_DB_PATH = Path("data/authorization.db")
 
 
@@ -99,20 +98,34 @@ class AuthorizationConsumption(SQLModel, table=True):
     consumed_at: datetime = Field(default_factory=_now)
 
 
-def load_or_create_signing_key(path: Path | str = _DEFAULT_KEY_PATH) -> Ed25519PrivateKey:
+class SigningKeyRecord(SQLModel, table=True):
+    """One row, ever. A raw PEM file (the original design) lives on the same
+    ephemeral filesystem as everything else on a free-tier host — it does
+    not survive a redeploy any more than a SQLite file does. Storing it as a
+    row in the same database as AuthorizationConsumption means it persists
+    under the exact same DATABASE_URL / disk story as every other table,
+    with no separate case to get wrong (FAILURE_LOG.md F-035)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    pem: str
+
+
+def load_or_create_signing_key(engine: Engine) -> Ed25519PrivateKey:
     """One key per deployment, generated on first use, never regenerated
     silently afterward — a receipt signed yesterday must still verify today."""
-    path = Path(path)
-    if path.exists():
-        return serialization.load_pem_private_key(path.read_bytes(), password=None)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    key = Ed25519PrivateKey.generate()
-    path.write_bytes(key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption(),
-    ))
-    return key
+    with Session(engine) as db:
+        row = db.exec(select(SigningKeyRecord)).first()
+        if row is not None:
+            return serialization.load_pem_private_key(row.pem.encode(), password=None)
+        key = Ed25519PrivateKey.generate()
+        pem = key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+        db.add(SigningKeyRecord(pem=pem))
+        db.commit()
+        return key
 
 
 def _signable_bytes(auth: Authorization) -> bytes:
@@ -164,19 +177,9 @@ def is_expired(auth: Authorization, now: datetime | None = None) -> bool:
 
 
 def authorization_db_engine(path: Path | str = _DEFAULT_DB_PATH) -> Engine:
-    """Same shape as ledger.ledger_engine / audit.audit_engine."""
-    if path == ":memory:":
-        engine = create_engine(
-            "sqlite://", connect_args={"check_same_thread": False},
-            poolclass=StaticPool, echo=False,
-        )
-    else:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(
-            f"sqlite:///{path}", connect_args={"check_same_thread": False}, echo=False,
-        )
-    SQLModel.metadata.create_all(engine)
-    return engine
+    """SQLite at ``path`` locally; one shared Postgres database when
+    DATABASE_URL is set — see db.py."""
+    return make_engine(path)
 
 
 def consume_authorization(

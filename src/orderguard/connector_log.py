@@ -14,8 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import Engine
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Field, Session, SQLModel, select
+
+from .db import make_engine
 
 __all__ = ["ConnectorCheck", "connector_log_engine", "record_check", "checks_for_merchant", "merchants_checked"]
 
@@ -40,19 +41,9 @@ class ConnectorCheck(SQLModel, table=True):
 
 
 def connector_log_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
-    """Same shape as ledger.ledger_engine / memory.memory_engine / audit.audit_engine."""
-    if path == ":memory:":
-        engine = create_engine(
-            "sqlite://", connect_args={"check_same_thread": False},
-            poolclass=StaticPool, echo=False,
-        )
-    else:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(
-            f"sqlite:///{path}", connect_args={"check_same_thread": False}, echo=False,
-        )
-    SQLModel.metadata.create_all(engine)
-    return engine
+    """SQLite at ``path`` locally; one shared Postgres database when
+    DATABASE_URL is set — see db.py."""
+    return make_engine(path)
 
 
 def record_check(

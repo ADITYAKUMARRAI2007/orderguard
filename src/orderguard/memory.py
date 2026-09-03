@@ -33,8 +33,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import Engine
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Field, Session, SQLModel, create_engine, delete, select
+from sqlmodel import Field, Session, SQLModel, delete, select
+
+from .db import make_engine
 
 __all__ = [
     "ChatTurn",
@@ -136,37 +137,9 @@ class Preference(SQLModel, table=True):
 # --- engine ----------------------------------------------------------------
 
 def memory_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
-    """Open (and create) the memory database.
-
-    ``":memory:"`` needs two non-obvious settings. SQLite gives every new
-    connection its own blank in-memory database, and SQLAlchemy's default pool
-    hands out a different connection per thread — so a web request served on a
-    worker thread would find no tables at all. ``StaticPool`` keeps one shared
-    connection, and ``check_same_thread`` lets other threads use it.
-    """
-    if path == ":memory:":
-        return _prepared(
-            create_engine(
-                "sqlite://",
-                connect_args={"check_same_thread": False},
-                poolclass=StaticPool,
-                echo=False,
-            )
-        )
-
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    return _prepared(
-        create_engine(
-            f"sqlite:///{path}",
-            connect_args={"check_same_thread": False},
-            echo=False,
-        )
-    )
-
-
-def _prepared(engine: Engine) -> Engine:
-    SQLModel.metadata.create_all(engine)
-    return engine
+    """SQLite at ``path`` locally; one shared Postgres database when
+    DATABASE_URL is set — see db.py."""
+    return make_engine(path)
 
 
 # --- chat ------------------------------------------------------------------

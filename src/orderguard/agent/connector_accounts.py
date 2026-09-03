@@ -33,8 +33,9 @@ from typing import Literal
 
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import Engine
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Field, Session, SQLModel, select
+
+from ..db import make_engine
 
 __all__ = [
     "LOCAL_PROFILE", "ConnectorAccount", "accounts_engine",
@@ -77,17 +78,9 @@ class ConnectorAccount(SQLModel, table=True):
 
 
 def accounts_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
-    if path == ":memory:":
-        engine = create_engine(
-            "sqlite://", connect_args={"check_same_thread": False},
-            poolclass=StaticPool, echo=False,
-        )
-    else:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(
-            f"sqlite:///{path}", connect_args={"check_same_thread": False}, echo=False,
-        )
-    SQLModel.metadata.create_all(engine)
+    """SQLite at ``path`` locally; one shared Postgres database when
+    DATABASE_URL is set — see db.py."""
+    engine = make_engine(path)
     _migrate_account_columns(engine)
     return engine
 
@@ -97,7 +90,15 @@ def _migrate_account_columns(engine: Engine) -> None:
     existing encrypted rows. SQLite cannot add all constraints in place, so
     account_id uniqueness remains enforced by owner/connector access patterns
     for migrated local databases; fresh databases receive the full model.
+
+    SQLite-only: ``PRAGMA table_info`` has no Postgres equivalent, and it
+    does not need one here. A brand-new Postgres database's ``connectoraccount``
+    table already has every column ``create_all`` (called just before this,
+    in ``accounts_engine``) puts there — this function only exists to patch
+    OLD, already-created SQLite files from before these columns existed.
     """
+    if engine.dialect.name != "sqlite":
+        return
     additions = {
         "account_id": "VARCHAR NOT NULL DEFAULT ''",
         "auth_strategy": "VARCHAR NOT NULL DEFAULT 'CUSTOM'",

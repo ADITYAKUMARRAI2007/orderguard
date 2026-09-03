@@ -19,9 +19,9 @@ from pathlib import Path
 
 import httpx
 from sqlalchemy import Engine
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Field, Session, SQLModel, select
 
+from ..db import make_engine
 from .ssrf_guard import assert_no_cross_host_redirect, assert_safe_url
 from .tools import ToolPermission
 
@@ -62,22 +62,24 @@ class CustomConnectorProtocolError(RuntimeError):
 
 
 def custom_connectors_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
-    if path == ":memory:":
-        engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-    else:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(f"sqlite:///{path}", connect_args={"check_same_thread": False})
-    SQLModel.metadata.create_all(engine)
-    with engine.begin() as connection:
-        columns = {
-            row[1] for row in connection.exec_driver_sql(
-                "PRAGMA table_info(customconnectortool)"
-            ).fetchall()
-        }
-        if "capability" not in columns:
-            connection.exec_driver_sql(
-                "ALTER TABLE customconnectortool ADD COLUMN capability VARCHAR"
-            )
+    """SQLite at ``path`` locally; one shared Postgres database when
+    DATABASE_URL is set — see db.py."""
+    engine = make_engine(path)
+    # SQLite-only: PRAGMA has no Postgres equivalent, and doesn't need one —
+    # create_all (inside make_engine) already gives a fresh Postgres table
+    # every current column. This only patches an OLD, already-created
+    # SQLite file from before "capability" existed on the model.
+    if engine.dialect.name == "sqlite":
+        with engine.begin() as connection:
+            columns = {
+                row[1] for row in connection.exec_driver_sql(
+                    "PRAGMA table_info(customconnectortool)"
+                ).fetchall()
+            }
+            if "capability" not in columns:
+                connection.exec_driver_sql(
+                    "ALTER TABLE customconnectortool ADD COLUMN capability VARCHAR"
+                )
     return engine
 
 

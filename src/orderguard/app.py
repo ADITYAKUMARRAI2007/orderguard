@@ -168,7 +168,7 @@ AUTH_DB = authorization_db_engine()
 # verifies against the same key for as long as the process runs. Passed
 # explicitly rather than left as issue_authorization's own default so tests
 # can swap in an ephemeral key instead of touching the real key file on disk.
-SIGNING_KEY = load_or_create_signing_key()
+SIGNING_KEY = load_or_create_signing_key(AUTH_DB)
 
 # Which x-razorpay-event-id deliveries have already been processed —
 # webhooks.py's own dedup table, separate from LEDGER because a delivery id

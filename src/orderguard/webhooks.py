@@ -28,8 +28,9 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import Engine
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Field, Session, SQLModel, create_engine
+from sqlmodel import Field, Session, SQLModel
+
+from .db import make_engine
 
 __all__ = [
     "PaymentEvent", "verify_webhook_signature", "parse_payment_event",
@@ -115,18 +116,9 @@ class WebhookDelivery(SQLModel, table=True):
 
 
 def webhook_log_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
-    if path == ":memory:":
-        engine = create_engine(
-            "sqlite://", connect_args={"check_same_thread": False},
-            poolclass=StaticPool, echo=False,
-        )
-    else:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(
-            f"sqlite:///{path}", connect_args={"check_same_thread": False}, echo=False,
-        )
-    SQLModel.metadata.create_all(engine)
-    return engine
+    """SQLite at ``path`` locally; one shared Postgres database when
+    DATABASE_URL is set — see db.py."""
+    return make_engine(path)
 
 
 def claim_delivery(engine: Engine, event_id: str, event_type: str) -> bool:

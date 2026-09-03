@@ -35,8 +35,9 @@ from pathlib import Path
 
 from sqlalchemy import Engine
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.pool import StaticPool
-from sqlmodel import Field, Session, SQLModel, create_engine, select
+from sqlmodel import Field, Session, SQLModel, select
+
+from .db import make_engine
 
 __all__ = [
     "AuditEvent", "ChainTampered", "audit_engine",
@@ -93,19 +94,9 @@ class ChainTampered(RuntimeError):
 
 
 def audit_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
-    """Same shape as ledger.ledger_engine / memory.memory_engine."""
-    if path == ":memory:":
-        engine = create_engine(
-            "sqlite://", connect_args={"check_same_thread": False},
-            poolclass=StaticPool, echo=False,
-        )
-    else:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        engine = create_engine(
-            f"sqlite:///{path}", connect_args={"check_same_thread": False}, echo=False,
-        )
-    SQLModel.metadata.create_all(engine)
-    return engine
+    """SQLite at ``path`` locally; one shared Postgres database when
+    DATABASE_URL is set — see db.py."""
+    return make_engine(path)
 
 
 def append_event(engine: Engine, event_type: str, payload: dict) -> AuditEvent:
