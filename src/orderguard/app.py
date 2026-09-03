@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -1836,6 +1837,12 @@ async def agent_run(request: AgentRunRequest) -> dict:
         })
         raise HTTPException(status_code=400, detail="refused: agent runtime exposure is read-only") from None
     except ConnectorPayloadError as exc:
+        # The audit event carries the reason too, but that requires querying
+        # the chain to read; this is the one place the actual mismatch
+        # (which field, what shape) reaches anywhere a human is likely to
+        # look during a live incident. The user-facing message stays generic
+        # on purpose (F-017) -- this print is for the operator, not them.
+        print(f"[agent] ConnectorPayloadError: {exc}", file=sys.stderr)
         append_event(AUDIT, "connector_result_unsupported", {
             "connector_id": exc.connector_id, "tool_name": exc.tool_name,
             "reason": exc.reason,
@@ -1902,6 +1909,12 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
         })
         raise HTTPException(status_code=400, detail="refused: agent runtime exposure is read-only") from None
     except ConnectorPayloadError as exc:
+        # The audit event carries the reason too, but that requires querying
+        # the chain to read; this is the one place the actual mismatch
+        # (which field, what shape) reaches anywhere a human is likely to
+        # look during a live incident. The user-facing message stays generic
+        # on purpose (F-017) -- this print is for the operator, not them.
+        print(f"[agent] ConnectorPayloadError: {exc}", file=sys.stderr)
         append_event(AUDIT, "connector_result_unsupported", {
             "connector_id": exc.connector_id, "tool_name": exc.tool_name,
             "reason": exc.reason,
