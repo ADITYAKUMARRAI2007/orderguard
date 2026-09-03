@@ -85,6 +85,26 @@ function nodesFor(step: MissionStep): NodeSpec[] {
     connectorNode,
   ];
 
+  // Ground truth on what was actually searched, computed server-side from
+  // real tool_calls — never from the model's own text. Real, live-found
+  // gap (FAILURE_LOG.md F-041): with more than one eligible connector, a
+  // turn's own reply is not reliable evidence of what it searched — it
+  // once claimed a fully-connected connector was "disconnected" when it
+  // had simply never called it. Only shown when eligibility offered more
+  // than got attempted, so a normal single-connector turn stays uncluttered.
+  const skipped = step.eligible_connector_ids.filter(
+    (id) => !step.attempted_connector_ids.includes(id),
+  );
+  if (hasConnector && skipped.length > 0) {
+    nodes.push({
+      kind: "COVERAGE",
+      value: `NOT SEARCHED: ${skipped.join(", ").toUpperCase()}`,
+      status: "paused",
+      meta: `ACTUALLY SEARCHED: ${step.attempted_connector_ids.join(", ").toUpperCase()} — DON'T TRUST THE REPLY TEXT ALONE`,
+      wide: true,
+    });
+  }
+
   if (isCommerce && hasConnector) {
     nodes.push(
       step.budget_minor != null

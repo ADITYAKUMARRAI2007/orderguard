@@ -101,6 +101,33 @@ async def test_without_an_image_commerce_general_does_not_widen_to_swiggy_instam
     assert result.eligible_connector_ids == ["shopify"]
 
 
+async def test_attempted_connector_ids_reflects_real_tool_calls_not_all_eligible_ones():
+    """Real, live-found gap (2026-09-03, see FAILURE_LOG.md F-041): with
+    more than one eligible connector, a turn's own reply text is not
+    reliable evidence of what it actually searched -- a live case had the
+    model claim a fully-connected, working connector was "disconnected"
+    when it had simply never called it. attempted_connector_ids is built
+    from the runtime's own real tool_calls, so eligible vs. actually-
+    searched can be compared without ever trusting the model's narration."""
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime(AgentTurnResult(
+        text="I searched Shopify only.", stop_reason="end_turn", runtime="stub",
+        tool_calls=[ToolCallEvent(
+            connector_id="shopify", server_name="shopify-0",
+            tool_name="search_catalog", arguments={}, execution_id="call-1",
+            result={"products": []},
+        )],
+    ))
+    image = ImageInput(media_type="image/jpeg", data_base64="ZmFrZS1qcGVn")
+    result = await run_agent_turn(
+        message="coffee", category="COMMERCE_GENERAL",
+        runtime=runtime, accounts=store, image=image,
+    )
+    assert set(result.eligible_connector_ids) == {"shopify", "swiggy-instamart"}
+    assert result.attempted_connector_ids == ["shopify"]
+
+
 async def test_shopify_keeps_multiple_stores_eligible_until_after_runtime_search():
     runtime = StubAgentRuntime()
     await run_agent_turn(

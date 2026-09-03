@@ -1824,6 +1824,7 @@ def _mission_json(mission: MissionResult) -> dict:
                 "duration_ms": step.duration_ms,
                 "budget_minor": step.budget_minor,
                 "eligible_connector_ids": step.eligible_connector_ids,
+                "attempted_connector_ids": step.attempted_connector_ids,
                 # 1:1 with mission.intents by construction (run_mission builds
                 # one step per intent, in order) — real correlation to the
                 # agent_intent_parsed audit event actually written for this
@@ -1900,6 +1901,7 @@ async def agent_run(request: AgentRunRequest) -> dict:
         "duration_ms": step.duration_ms,
         "budget_minor": step.budget_minor,
         "eligible_connector_ids": step.eligible_connector_ids,
+        "attempted_connector_ids": step.attempted_connector_ids,
     }
 
 

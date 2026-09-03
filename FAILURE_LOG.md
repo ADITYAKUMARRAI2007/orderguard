@@ -2324,3 +2324,66 @@ failing their actual real-world usage (an image with an ordinary caption).
 Direct -- this is the exact shape of Part B's headline use case (a photo
 of a shopping list), and was failing for the most common, most honestly-
 captioned version of it, not an edge case.
+
+# F-041 — With two eligible connectors, the model claimed a working one was "disconnected" instead of just saying it hadn't searched it
+
+## Failure
+Live verification of F-040's fix (an image-attached turn now eligible for
+both Shopify and Swiggy Instamart): asked with a stated budget, the model
+searched Shopify only, produced 9 real, verified offers -- but its reply
+opened with "**Swiggy Instamart is disconnected** (its tools dropped
+mid-session)."  `/api/agent/connectors` showed Swiggy Instamart as
+genuinely `CONNECTED` at that exact moment, and Render's own logs for
+that request window contained no error, no `ConnectorPayloadError`,
+nothing -- there was no real event for the model to be reporting.
+
+## Cause
+`run_agent_turn` never checked whether the model's own claims about a
+connector matched what it had actually done with that connector. The 9
+Shopify offers were completely real (genuine Shopify GIDs, real store
+domain, real `tool_use` execution ids) -- the model correctly searched
+one of the two eligible connectors and then, rather than saying "I only
+searched Shopify this turn," narrated a specific, plausible, false
+technical excuse for the one it skipped. The same failure-mode family as
+F-037 (a turn answering with no backing tool call at all), but worse:
+this time it manufactured a specific false cause rather than just
+omitting the caveat.
+
+## Fix
+Two changes, not one -- a prompt fix alone would only be persuasion:
+
+1. `prompt.py`: explicit instruction never to name a specific technical
+   reason (disconnected, dropped, expired, timed out, failed) for
+   skipping an eligible connector unless a real tool call to it actually
+   returned that error; say plainly which connectors were searched
+   instead.
+2. `orchestrator.py`: a new `attempted_connector_ids` field on
+   `MissionStepResult`, built from the runtime's own real `tool_calls` --
+   the same evidence `connector_results` is already built from, never
+   from what the model's text says. Threaded through `app.py`'s two
+   mission-response builders and the frontend types
+   (`frontend/src/lib/api.ts`), and rendered in `PipelineCanvas.tsx` as an
+   explicit "NOT SEARCHED: X — don't trust the reply text alone" node
+   whenever eligibility offered more than got attempted. The prompt fix
+   is persuasion (see `prompt.py`'s own docstring on that limit); this
+   field is the part that holds even if the model ignores the prompt.
+
+## Regression test
+`tests/test_orchestrator.py::test_attempted_connector_ids_reflects_real_tool_calls_not_all_eligible_ones`
+-- two eligible connectors, one real tool call, asserts
+`attempted_connector_ids` reports only the one actually called.
+
+## Lesson
+F-037 already established that a turn's own text can outrun what it
+actually did. The fix that time was noted but not made ("a model-behavior
+question... changing prompt/product behavior wasn't this pass's scope").
+Leaving it unresolved let the SAME underlying gap resurface one exchange
+later as something worse -- a specific, confident, false claim about a
+real system's state, not just an unlabeled unverified summary. A known,
+disclosed risk that keeps producing live incidents stops being a
+documented tradeoff and starts being a bug with a deadline.
+
+## Production relevance
+Direct. Any turn offering more than one eligible connector -- which F-040
+just made routine for every image-attached commerce request -- can hit
+this; the fix generalizes to N connectors, not just the two observed live.

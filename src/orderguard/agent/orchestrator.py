@@ -97,6 +97,16 @@ class MissionStepResult:
     # way, and the UI has no honest way to tell "not authenticated" apart
     # from "authenticated, just hasn't been called yet this turn."
     eligible_connector_ids: list[str] = field(default_factory=list)
+    # Real, live-found gap (2026-09-03, see FAILURE_LOG.md F-041): with more
+    # than one eligible connector in a turn, the model's own text is not a
+    # trustworthy record of which ones it actually searched — a live,
+    # reproduced case had it claim a fully-connected, working connector was
+    # "disconnected mid-session" when it had simply never called it. Built
+    # from the runtime's own real tool_calls (the same evidence
+    # ``connector_results`` is built from), never from what the model says
+    # about itself, so the UI/audit has ground truth independent of the
+    # model's own narration.
+    attempted_connector_ids: list[str] = field(default_factory=list)
     # Opaque continuation state for whichever runtime handled this step —
     # see runtime/base.py::AgentTurnResult. The caller (missions.py/app.py)
     # persists this and passes it back on the NEXT call in the same
@@ -191,6 +201,7 @@ async def run_agent_turn(
     connector_by_id = {c.id: c for c in eligible}
     connector_results: list[ConnectorResult] = []
     chosen_connector_id: str | None = None
+    attempted_connector_ids: list[str] = []
     for call in turn.tool_calls:
         server_name = call.server_name or call.connector_id
         spec = spec_by_server.get(server_name)
@@ -219,6 +230,8 @@ async def run_agent_turn(
         connector = connector_by_id[spec.connector_id]
         risk_tier = allowed[call.tool_name].risk_tier
         chosen_connector_id = spec.connector_id
+        if spec.connector_id not in attempted_connector_ids:
+            attempted_connector_ids.append(spec.connector_id)
         result = normalize(
             call,
             capability=category,
@@ -253,6 +266,7 @@ async def run_agent_turn(
         session_context=turn.session_context,
         budget_minor=budget_minor,
         eligible_connector_ids=[c.id for c in eligible],
+        attempted_connector_ids=attempted_connector_ids,
     )
 
 

@@ -119,6 +119,14 @@ export interface MissionStep {
   // hasn't been called yet (model asked a question first)" apart from
   // "truly no eligible connector," which connector_id alone can't do.
   eligible_connector_ids: string[];
+  // Connectors the runtime ACTUALLY called this turn, built from its real
+  // tool_calls — never from the model's own text. Real, live-found gap
+  // (see FAILURE_LOG.md F-041): with more than one eligible connector, the
+  // model's own narration is not reliable evidence of what it searched —
+  // it once claimed a fully-connected connector was "disconnected" when it
+  // had simply never called it. Compare against eligible_connector_ids to
+  // show the user, truthfully, what was and wasn't searched this turn.
+  attempted_connector_ids: string[];
   // 1:1 with the mission's intents — correlates this step to the real
   // agent_intent_parsed audit event app.py actually wrote for it.
   intent_id: string;
@@ -140,6 +148,7 @@ export interface AgentRunResponse {
   duration_ms: number;
   budget_minor: number | null;
   eligible_connector_ids: string[];
+  attempted_connector_ids: string[];
 }
 
 export type CheckStatus = "success" | "failure" | "pending";
