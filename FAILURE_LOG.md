@@ -2069,3 +2069,80 @@ Direct. Any two-phase propose/approve flow that separates a read from a
 later write risks exactly this if the read's own scoping context isn't
 carried forward — worth checking in any interface (this or a future one)
 that lets a user browse against one context and commit against another.
+
+# F-037 — On the subscription runtime, a continuation turn answered with specific-sounding data while making zero tool calls
+
+## Failure
+Live B7 verification of the image-upload feature (a real photo of a
+two-item list — "Ghee 500g", "Face wash" — sent through the deployed
+Mission page's API, subscription runtime). Turn 1 (image attached)
+correctly read both items and asked the required budget question — a
+clean pass, matching two other independent image tests (a four-item
+grocery list, and a repeat of this same two-item list) that all
+transcribed images correctly. Turn 2, continuing the same conversation
+with a stated budget, returned a confident, specific answer — real-
+looking product names ("Bharat ka Desi Ghee, 500ml — ₹925.00",
+"mCaffeine Coffee Face Wash, 50ml — ₹149.00"), a flagged pricing anomaly
+between two SKUs, and a total compared against the stated budget — but
+the response's structured `results` array was empty and `council` was
+null, meaning zero real `ConnectorResult`s existed for the UI to render
+as offer cards.
+
+## Cause
+`run_agent_turn` (orchestrator.py) only ever produces a `ConnectorResult`
+by iterating `turn.tool_calls` — the list the runtime reports the model
+actually invoked. For this turn, that list was empty:
+`connector_id: null`, `eligible_connector_ids: ["shopify"]`,
+`budget_minor: 80000` (so the eligible connector and stated budget both
+reached the model correctly), yet `chosen_connector_id` stayed `None`,
+which only happens inside the tool-call loop. The response was also a
+plain `200`, not the `422` a real `ConnectorPayloadError` produces (a
+distinct, separately-observed real Shopify fixture-validation bug also
+hit live during this same test window — see Render logs, unrelated to
+this one). So the model was offered real search tools, had everything it
+needed to call them, and answered anyway without calling anything —
+matching typical-sounding pricing for real-sounding product names, not
+data traceable to any tool result this turn.
+
+## How I proved it
+Checked Render's own live logs for the exact request window (`list_logs`
+against `srv-dac07j2fngtc73fgsfpg`) rather than trusting the response
+body alone — confirmed no crash, no 422, no partial-result path that
+could explain an empty `results` array other than "no tool call was
+made." Cross-checked `orchestrator.py`'s loop directly: every branch that
+can leave `connector_results` empty either requires zero `tool_calls` or
+raises (there is no silent-skip path for Shopify, only for Swiggy's
+informational-only tools, which don't apply here).
+
+## Fix
+Not made. This is a model-behavior question (should the system prompt's
+"Report exactly what you observed... do not round up... your own
+confidence" instruction be strengthened specifically for continuation
+turns, or should the orchestrator refuse to surface `model_text` at all
+when a commerce category step made no tool call?) rather than a code bug
+with one obvious correct fix, and changing prompt/product behavior wasn't
+this pass's scope.
+
+## Regression test
+None yet — needs a `StubAgentRuntime` scenario that returns text but zero
+tool_calls for a commerce category, asserting the API layer either
+suppresses or clearly labels that text as unverified, so this can't
+silently ship as "the agent found real offers" copy in the UI.
+
+## Lesson
+A structured, empty `results` array already fails safe here — no offer
+card exists to approve, so this cannot become a wrong cart write or
+payment; the R1 propose/approve boundary holds regardless of what the
+model's free-text says. But the free text itself reaching the user
+unlabeled is still a real trust gap for a product whose entire pitch is
+"deterministic code, never the LLM, authorizes money" — the same
+discipline needs to extend to what the LLM is *allowed to claim in
+words*, not just what it's allowed to *execute*.
+
+## Production relevance
+Direct, and higher-priority than F-036: any commerce-category continuation
+turn on the subscription runtime can currently produce confident,
+specific-sounding claims with no backing tool call, and the UI has no way
+today to tell that turn's `model_text` apart from a turn that actually
+searched. Worth fixing before treating image-upload's multi-turn budget
+flow as production-safe end to end.
