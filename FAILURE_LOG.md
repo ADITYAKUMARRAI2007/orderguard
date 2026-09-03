@@ -2013,3 +2013,59 @@ Direct, and not a hypothetical: this deleted a real credential a real
 person had just created, twice, before it was fixed. "Free tier" and
 "stateless between deploys" are not the same claim, and conflating them is
 exactly how a demo's own maintainer becomes the thing that breaks it.
+
+# F-036 — Approving a real cart write with the wrong saved address fails, correctly, but confusingly
+
+## Failure
+Live end-to-end test of the propose -> approve -> real-cart-write flow
+(OfferApproval.tsx / app.py's cart-actions endpoints): searched real
+Swiggy Instamart offers, approved one, picked a saved address from the
+picker, confirmed. Swiggy's own `update_cart` rejected it: "Your cart
+could not be updated — no valid items remained, so the cart is now
+empty." A second attempt, identical except for which saved address was
+picked, succeeded (`3 ITEM(S), 2 EXISTING ITEM(S) PRESERVED`).
+
+## Cause
+The real `search_products` call (made by the LLM, inside the Mission
+conversation) and the real `update_cart` call (made directly by
+`add_to_instamart_cart`, at approval time, outside the conversation) are
+two independent Swiggy API interactions. The offers a search returns are
+scoped to whatever delivery context the conversation established; the
+address picker in `OfferApproval.tsx` has no way to know what that was —
+it just lists every saved address and lets the user pick any one. Picking
+one that does not match the search's real delivery context makes the
+`spinId` genuinely unsellable there, and Swiggy correctly refuses it.
+
+## How I proved it
+Reproduced on purpose: repeated the identical propose/approve/confirm
+sequence twice, real Swiggy account, changing only which saved address
+was selected at the approval step. Failed on "Home", succeeded on "Work"
+— the same address the search conversation had actually confirmed
+delivery to a few turns earlier.
+
+## Fix
+Not yet made. This failed exactly the way it should — closed, with a real
+reason surfaced in the UI (`HALTED BEFORE WRITING ANYTHING`), no
+corrupted state, no silent partial write. The gap is discoverability, not
+safety: `OfferApproval` could thread through whichever address the search
+turn actually used (available on `MissionStep`/`ConnectorResult` if
+threaded from the orchestrator) and default the picker to it, or at least
+label it, rather than presenting every saved address as equally valid.
+
+## Regression test
+None yet — this is a live-discovered UX gap, not a code path exercised by
+the offline test suite (both real API calls are outside what
+`StubAgentRuntime` reaches).
+
+## Lesson
+Two systems that are each individually correct can still disagree about
+which "current context" they mean. Neither the search call nor the write
+call was wrong about anything; nothing in this codebase declared which
+address the search actually happened under, so nothing could check the
+two agreed before letting the write proceed.
+
+## Production relevance
+Direct. Any two-phase propose/approve flow that separates a read from a
+later write risks exactly this if the read's own scoping context isn't
+carried forward — worth checking in any interface (this or a future one)
+that lets a user browse against one context and commit against another.
