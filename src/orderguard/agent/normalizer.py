@@ -16,7 +16,8 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..commerce.base import Offer
-from ..commerce.search import ScoredOffer
+from ..commerce.search import ScoredOffer, rank
+from ..commerce.search import _tokens as _relevance_tokens
 from ..commerce.shopify_mcp import minor_from_search
 from .results import CommerceResult, ConnectorResult, DevTaskResult
 from .runtime.base import ToolCallEvent
@@ -133,6 +134,7 @@ class ShopifyNormalizer:
         if not isinstance(store, str) or not store:
             raise ConnectorPayloadError(call.connector_id, call.tool_name, "missing verified store provenance")
 
+        query = _search_query_from_call(call)
         offers: list[ScoredOffer] = []
         for product in body.products:
             for variant in product.variants:
@@ -155,8 +157,8 @@ class ShopifyNormalizer:
                         call.connector_id, call.tool_name,
                         f"invalid Shopify offer: {type(exc).__name__}: {exc}",
                     ) from None
-                offers.append(_scored(offer, budget_minor=budget_minor))
-        return CommerceResult(merchant="shopify", offers=offers)
+                offers.append(_scored(offer, budget_minor=budget_minor, query=query))
+        return CommerceResult(merchant="shopify", offers=rank(offers))
 
 
 class _SwiggyPrice(BaseModel):
@@ -302,6 +304,7 @@ class SwiggyNormalizer:
         except ValidationError as exc:
             raise _validation_error(call, exc) from None
 
+        query = _search_query_from_call(call)
         offers: list[ScoredOffer] = []
         for product in body.products:
             for variation in product.variations:
@@ -317,8 +320,8 @@ class SwiggyNormalizer:
                     available=variation.isInStockAndAvailable and product.inStock and product.isAvail,
                     image=variation.imageUrl,
                 )
-                offers.append(_scored(offer, budget_minor=budget_minor))
-        return CommerceResult(merchant=call.connector_id, offers=offers)
+                offers.append(_scored(offer, budget_minor=budget_minor, query=query))
+        return CommerceResult(merchant=call.connector_id, offers=rank(offers))
 
     def _normalize_food_menu(
         self, call: ToolCallEvent, *, budget_minor: int | None,
@@ -329,6 +332,7 @@ class SwiggyNormalizer:
         except ValidationError as exc:
             raise _validation_error(call, exc) from None
 
+        query = _search_query_from_call(call)
         offers: list[ScoredOffer] = []
         for item in body.items:
             # See the class docstring: a variant-having dish's real
@@ -350,8 +354,8 @@ class SwiggyNormalizer:
                 available=item.inStock > 0,
                 image=item.imageUrl,
             )
-            offers.append(_scored(offer, budget_minor=budget_minor))
-        return CommerceResult(merchant=call.connector_id, offers=offers)
+            offers.append(_scored(offer, budget_minor=budget_minor, query=query))
+        return CommerceResult(merchant=call.connector_id, offers=rank(offers))
 
 
 class _GitHubUser(BaseModel):
@@ -496,10 +500,61 @@ def _validation_error(call: ToolCallEvent, exc: ValidationError) -> ConnectorPay
     )
 
 
-def _scored(offer: Offer, *, budget_minor: int | None = None) -> ScoredOffer:
+def _search_query_from_call(call: ToolCallEvent) -> str:
+    """The real search text the runtime actually sent this tool -- not the
+    user's original message, which the model may have rephrased or split.
+    Shopify's ``search_catalog`` nests it under ``catalog.query``
+    (``commerce/shopify_mcp.py``'s own wire shape); Swiggy's
+    ``search_products``/``search_menu`` take it flat as ``query``. Returns
+    ``""`` (never a guess) if neither shape matches -- callers already treat
+    an empty query as "no relevance signal available" via ``_relevance``.
+    """
+    args = call.arguments or {}
+    catalog = args.get("catalog")
+    if isinstance(catalog, dict) and isinstance(catalog.get("query"), str):
+        return catalog["query"]
+    if isinstance(args.get("query"), str):
+        return args["query"]
+    return ""
+
+
+def _relevance(query: str, offer: Offer) -> float:
+    """Real, live-found gap (2026-09-04): every real Mission-flow offer was
+    scored ``relevance=1.0`` unconditionally, so the Decision Council had NO
+    signal at all to prefer plain "Onion" over "Onion Paste" for a search
+    that asked for "onion" -- both matched the query token, so both looked
+    equally, perfectly relevant. Same deterministic-tokens approach as
+    ``commerce/search.py`` (this module's own FreshCart equivalent), but
+    Jaccard (intersection over UNION, not just intersection over the wanted
+    set) rather than plain recall -- recall alone can't tell "onion"
+    (wanted={onion}, found={onion}) apart from "onion paste"
+    (wanted={onion}, found={onion,paste}): both contain every wanted token,
+    so a recall-only score rates them identically. Union in the denominator
+    is what penalizes the offer's own extra, unasked-for words.
+
+    Scored against ``offer.title`` alone, not ``variant_title`` -- in every
+    real fixture this normalizer parses, variant_title is pack size/
+    quantity ("500 ml x 4", "1kg", "Default Title"), never a qualifier
+    that changes what the product fundamentally is. Folding it into the
+    same Jaccard score penalized EVERY offer for merely having a size on
+    it (a real regression caught by this fix's own first test attempt: a
+    plain "Onion, 1kg" scored 0.5 against a bare "onion" query, same as
+    "Onion Paste" would).
+    """
+    wanted = _relevance_tokens(query)
+    if not wanted:
+        return 1.0
+    found = _relevance_tokens(offer.title)
+    if not found:
+        return 0.0
+    union = wanted | found
+    return round(len(wanted & found) / len(union), 3) if union else 1.0
+
+
+def _scored(offer: Offer, *, budget_minor: int | None = None, query: str = "") -> ScoredOffer:
     return ScoredOffer(
         offer=offer,
-        relevance=1.0,
+        relevance=_relevance(query, offer),
         in_stock=offer.available,
         priced=True,
         within_budget=None if budget_minor is None else offer.price_minor <= budget_minor,

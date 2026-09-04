@@ -2959,3 +2959,68 @@ obtained outside this hosted deployment's own control, through a channel
 (a local Claude Code session) that cannot be re-triggered from
 production. Worth stating plainly rather than implying the "Reconnect"
 button is a complete, self-service fix.
+
+# F-047 — Every real offer scored relevance=1.0, so a search for "onion" could rank "Onion Paste" above plain "Onion"
+
+## Failure
+The user reported it directly: search for "onion" and the results include
+"onion paste" ranked as if it were an equally good match — asked for a
+plain grocery item, got a derivative product recommended alongside or
+above it in a "top 5" list.
+
+## Cause
+Two separate, compounding gaps, both real:
+1. `normalizer.py::_scored()` set `relevance=1.0` on every real offer
+   from Shopify or Swiggy, unconditionally — no comparison against the
+   actual search query was ever made. A plain "Onion" and "Onion Paste"
+   were mathematically indistinguishable to the Decision Council; nothing
+   in `filter_eligible`/`run_decision_council` had any signal to prefer
+   one over the other beyond price and stock.
+2. Even where a real `relevance` field DID already exist on `ScoredOffer`
+   (built for `commerce/search.py`'s own FreshCart flow), nothing in the
+   Mission-flow path (`orchestrator.py`) ever called `rank()` — the
+   function that actually sorts offers by it. Offers reached the UI in
+   whatever raw order the connector happened to return them.
+
+## Fix
+`_scored()` now computes a real, deterministic relevance score via a new
+`_relevance()` helper: Jaccard similarity (intersection over union, not
+plain recall) between the tokenized search query and the tokenized
+**product title only** — not `variant_title`, which in every real fixture
+here is pack size/quantity ("500 ml x 4", "1kg"), not a qualifier that
+changes what the product fundamentally is; an early version of this fix
+folded variant_title in too and it penalized every offer merely for
+having a pack size, catching itself in its own first test. Union (not
+recall) is what actually distinguishes "onion" (wanted={onion},
+found={onion}, relevance 1.0) from "onion paste" (found={onion,paste},
+relevance 0.5) — a plain recall check can't, since both contain every
+wanted token. The search query itself is extracted from the real tool
+call arguments (`catalog.query` for Shopify, `query` for Swiggy), never
+guessed. All three `CommerceResult` construction sites now wrap their
+offers in `rank()` — the same function `commerce/search.py`'s own docstring
+already expected every caller to apply and this one never did — so
+relevance (and stock, budget, price) actually determines display order,
+not just an unused number attached to each offer.
+
+## Regression test
+`tests/test_normalizer.py`: a plain "onion" search ranks an exact "Onion"
+above "Onion Paste" even though the paste is cheaper (proving relevance is
+checked before price, the order `rank()` already documents); the same for
+Shopify's nested `catalog.query` shape; a call with no extractable query
+keeps the old all-relevant default (backward compatible, and covers every
+existing test that never passed a query).
+
+## Lesson
+A field that exists and is populated is not the same claim as a field
+that is USED. `ScoredOffer.relevance` was real, correctly typed, and
+completely inert for every live Mission-flow search until today — nothing
+downstream ever read it for anything but a number to display, because the
+one function that turns it into actual ordering was never called on this
+path. Two separate fixes were needed for one visible symptom: compute the
+signal, AND wire it to something that acts on it.
+
+## Production relevance
+Direct — the specific example (onion vs onion paste) was the user's own
+real search, not a constructed test case, and this generalizes to every
+Mission-flow commerce search across every connector, not just this one
+query.

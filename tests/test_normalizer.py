@@ -123,6 +123,95 @@ def test_swiggy_search_normalizes_into_commerce_offers():
     assert single.variant_title == "500 ml"
 
 
+def test_a_plain_search_ranks_the_exact_match_above_a_derivative_product():
+    """Real, live-found gap (2026-09-04): every real offer used to score
+    relevance=1.0 unconditionally, so a search for "onion" gave "Onion" and
+    "Onion Paste" the identical score -- Swiggy's own search returning a
+    loosely-related derivative product could then outrank the actual thing
+    asked for on price alone. relevance must distinguish an exact-ish title
+    match from one with real extra words, and the offers list must actually
+    come back sorted by it, not just carry the number unused."""
+    result_data = {
+        "products": [
+            {
+                "displayName": "Onion Paste", "inStock": True, "isAvail": True,
+                "productId": "P-PASTE",
+                "variations": [{
+                    "spinId": "V-PASTE", "skuId": "SKU-PASTE", "displayName": "Onion Paste",
+                    "price": {"offerPrice": 40}, "isInStockAndAvailable": True,
+                }],
+            },
+            {
+                "displayName": "Onion", "inStock": True, "isAvail": True,
+                "productId": "P-ONION",
+                "variations": [{
+                    "spinId": "V-ONION", "skuId": "SKU-ONION", "displayName": "Onion",
+                    "price": {"offerPrice": 45}, "isInStockAndAvailable": True,
+                }],
+            },
+        ],
+    }
+    call = ToolCallEvent(
+        connector_id="swiggy-instamart", tool_name="search_products",
+        arguments={"query": "onion"}, result=result_data,
+    )
+    result = normalize(call, capability="COMMERCE_GROCERY", risk_tier="R0", provenance="stub")
+    offers = result.payload.offers
+
+    onion = next(o for o in offers if o.offer.variant_id == "V-ONION")
+    paste = next(o for o in offers if o.offer.variant_id == "V-PASTE")
+    assert onion.relevance == 1.0
+    assert paste.relevance < onion.relevance
+    # Cheaper AND worse-matching must still lose -- relevance is checked
+    # before price, the same order rank() already documents.
+    assert offers[0].offer.variant_id == "V-ONION"
+
+
+def test_shopify_search_ranks_by_relevance_using_the_nested_catalog_query():
+    call = ToolCallEvent(
+        connector_id="shopify", tool_name="search_catalog",
+        arguments={"store": "example.com", "catalog": {"query": "onion"}},
+        result={
+            "products": [
+                {
+                    "id": "p-paste", "title": "Onion Paste", "url": "",
+                    "variants": [{
+                        "id": "v-paste", "title": "200g",
+                        "price": {"amount": 4000, "currency": "INR"},
+                        "availability": {"available": True},
+                    }],
+                },
+                {
+                    "id": "p-onion", "title": "Onion", "url": "",
+                    "variants": [{
+                        "id": "v-onion", "title": "1kg",
+                        "price": {"amount": 4500, "currency": "INR"},
+                        "availability": {"available": True},
+                    }],
+                },
+            ],
+        },
+    )
+    result = normalize(call, capability="COMMERCE_GENERAL", risk_tier="R0", provenance="stub")
+    offers = result.payload.offers
+    assert offers[0].offer.variant_id == "v-onion"
+    assert offers[0].relevance == 1.0
+    paste = next(o for o in offers if o.offer.variant_id == "v-paste")
+    assert paste.relevance < 1.0
+
+
+def test_no_query_available_keeps_the_old_all_relevant_behavior():
+    """Backward-compatible default: a call this codebase can't extract a
+    query from (or a caller that never passes ``arguments`` at all) must
+    not start silently zeroing out every offer's relevance."""
+    call = ToolCallEvent(
+        connector_id="swiggy-instamart", tool_name="search_products", arguments={},
+        result=_REAL_SWIGGY_SEARCH_RESULT,
+    )
+    result = normalize(call, capability="COMMERCE_GROCERY", risk_tier="R0", provenance="stub")
+    assert all(o.relevance == 1.0 for o in result.payload.offers)
+
+
 def test_swiggy_unavailable_variation_or_product_is_reported_unavailable():
     result_data = {
         "products": [{
