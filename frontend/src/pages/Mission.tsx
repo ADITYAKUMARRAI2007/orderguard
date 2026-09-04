@@ -68,12 +68,21 @@ export function Mission() {
   // restarting from node zero: real backend continuity, fake visual reset.
   const [steps, setSteps] = useState<MissionStep[]>([]);
   // Every real, successful cart write this whole tab session — never
-  // cleared, accumulated the same way `steps` is, across every approval
-  // on every card. checkout_url is a per-CONNECTOR "go finish on the
+  // cleared, updated the same way `steps` is, across every approval on
+  // every card. checkout_url is a per-CONNECTOR "go finish on the
   // merchant's own site" link (Swiggy Instamart's own cart page, not a
-  // per-item URL), so this collapses to one entry per connector with a
-  // running item count, letting the page offer ONE consolidated checkout
-  // action instead of the same link repeated on every approved card.
+  // per-item URL), so this collapses to one entry per connector, letting
+  // the page offer ONE consolidated checkout action instead of the same
+  // link repeated on every approved card.
+  //
+  // itemsWritten is NOT additive across approvals: update_cart's own real
+  // schema REPLACES the whole cart every time (see swiggy_cart.py's own
+  // docstring), so items_written on every single response is already the
+  // connector's REAL, CURRENT, TOTAL cart size, not "how many this write
+  // added." Summing it across approvals inflated the count far past what
+  // was actually in the cart -- real, reported symptom (2026-09-05): "9
+  // ITEM(S) APPROVED" shown when the real cart held a fraction of that.
+  // The latest approval's number already IS the true running total.
   const [approvedCheckouts, setApprovedCheckouts] = useState<
     { connectorId: string; checkoutUrl: string; itemsWritten: number }[]
   >([]);
@@ -81,11 +90,7 @@ export function Mission() {
     setApprovedCheckouts((prev) => {
       const existing = prev.find((c) => c.connectorId === info.connectorId);
       if (!existing) return [...prev, info];
-      return prev.map((c) =>
-        c.connectorId === info.connectorId
-          ? { ...c, checkoutUrl: info.checkoutUrl, itemsWritten: c.itemsWritten + info.itemsWritten }
-          : c,
-      );
+      return prev.map((c) => (c.connectorId === info.connectorId ? info : c));
     });
   }
   const [runtimeName, setRuntimeName] = useState("");
