@@ -16,6 +16,13 @@ interface Props {
   connectorId: string;
   result: ConnectorResult;
   council: CouncilResult | null;
+  // Fired once, right when a real cart write actually succeeds — never
+  // speculatively, never before the real approveCartAction response comes
+  // back. Lets a page-level parent collect "which connectors have at
+  // least one real approved item" across every card and every mission
+  // turn in the session, so it can offer ONE consolidated checkout action
+  // instead of the same per-card link repeated on every approved card.
+  onApproved?: (info: { connectorId: string; checkoutUrl: string; itemsWritten: number }) => void;
 }
 
 type ApprovalState =
@@ -38,7 +45,7 @@ function formatMoney(paise: number, currency: string): string {
 const MIN_QTY = 1;
 const MAX_QTY = 50; // matches ProposeCartActionRequest.quantity's own ge=1, le=50
 
-export function OfferApproval({ connectorId, result, council }: Props) {
+export function OfferApproval({ connectorId, result, council, onApproved }: Props) {
   const [state, setState] = useState<ApprovalState>({ phase: "idle" });
   // Per-offer, not global — comparing two pack sizes side by side shouldn't
   // force the same quantity on both. Lazily defaults to 1 per offer key.
@@ -101,6 +108,9 @@ export function OfferApproval({ connectorId, result, council }: Props) {
         phase: "done", checkoutUrl: outcome.checkout_url,
         itemsWritten: outcome.items_written.length, preservedExisting: outcome.preserved_existing_items,
         cartReadSkippedReason: outcome.cart_read_skipped_reason,
+      });
+      onApproved?.({
+        connectorId, checkoutUrl: outcome.checkout_url, itemsWritten: outcome.items_written.length,
       });
     } catch (err) {
       setState({ phase: "error", message: err instanceof ApiError ? err.message : String(err) });

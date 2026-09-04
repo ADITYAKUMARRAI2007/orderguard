@@ -21,6 +21,10 @@ interface Props {
   runtime: string;
   running: boolean;
   pendingCategories?: string[];
+  // Forwarded straight to every OfferApproval card this canvas renders —
+  // see that component's own prop doc for why a page-level parent wants
+  // this instead of each card handling its own checkout link in isolation.
+  onApproved?: (info: { connectorId: string; checkoutUrl: string; itemsWritten: number }) => void;
 }
 
 interface NodeSpec {
@@ -222,7 +226,7 @@ function Tilt({ children }: { children: React.ReactNode }) {
   );
 }
 
-export function PipelineCanvas({ steps, runtime, running, pendingCategories = [] }: Props) {
+export function PipelineCanvas({ steps, runtime, running, pendingCategories = [], onApproved }: Props) {
   return (
     <Tilt>
       <section
@@ -305,6 +309,7 @@ export function PipelineCanvas({ steps, runtime, running, pendingCategories = []
                     connectorId={step.connector_id!}
                     result={call}
                     council={step.council}
+                    onApproved={onApproved}
                   />
                 ))}
               </div>

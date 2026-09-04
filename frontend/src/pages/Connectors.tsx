@@ -65,6 +65,32 @@ export function Connectors() {
     refresh();
   }, []);
 
+  // Real-time sync for the one thing on this page that actually changes
+  // on its own: mcp_verified_status, updated server-side by whatever real
+  // mission turn last touched a connector — possibly from a different tab,
+  // or from the deployed Mission page entirely. Polls ONLY the cheap
+  // connectors list (a DB read), not the full refresh() above, which also
+  // re-runs the slow `claude mcp list` subprocess check (3-8s) that has no
+  // reason to repeat on a timer. A user no longer needs to reload this
+  // page to see a status that already changed elsewhere.
+  useEffect(() => {
+    const id = setInterval(() => {
+      api.connectors().then((r) => setConnectors(r.connectors)).catch((err) => {
+        console.error("Failed to refresh connector status", err);
+      });
+    }, 15_000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Ticks the visible "checked Xs ago" text every second between polls —
+  // no new fetch, just a forced re-render so the number actually counts
+  // up live instead of jumping once every 15s.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => forceTick((n) => n + 1), 1_000);
+    return () => clearInterval(id);
+  }, []);
+
   async function setMode(mode: "api" | "subscription") {
     setRuntime(await api.setRuntimeMode(mode));
   }

@@ -67,6 +67,27 @@ export function Mission() {
   // why answering a clarifying question looked like the whole mission
   // restarting from node zero: real backend continuity, fake visual reset.
   const [steps, setSteps] = useState<MissionStep[]>([]);
+  // Every real, successful cart write this whole tab session — never
+  // cleared, accumulated the same way `steps` is, across every approval
+  // on every card. checkout_url is a per-CONNECTOR "go finish on the
+  // merchant's own site" link (Swiggy Instamart's own cart page, not a
+  // per-item URL), so this collapses to one entry per connector with a
+  // running item count, letting the page offer ONE consolidated checkout
+  // action instead of the same link repeated on every approved card.
+  const [approvedCheckouts, setApprovedCheckouts] = useState<
+    { connectorId: string; checkoutUrl: string; itemsWritten: number }[]
+  >([]);
+  function handleApproved(info: { connectorId: string; checkoutUrl: string; itemsWritten: number }) {
+    setApprovedCheckouts((prev) => {
+      const existing = prev.find((c) => c.connectorId === info.connectorId);
+      if (!existing) return [...prev, info];
+      return prev.map((c) =>
+        c.connectorId === info.connectorId
+          ? { ...c, checkoutUrl: info.checkoutUrl, itemsWritten: c.itemsWritten + info.itemsWritten }
+          : c,
+      );
+    });
+  }
   const [runtimeName, setRuntimeName] = useState("");
   const [running, setRunning] = useState(false);
   const [pending, setPending] = useState<string[]>([]);
@@ -412,8 +433,40 @@ export function Mission() {
         </footer>
       </section>
 
-      <PipelineCanvas steps={steps} runtime={runtimeName} running={running} pendingCategories={pending} />
+      <PipelineCanvas
+        steps={steps} runtime={runtimeName} running={running} pendingCategories={pending}
+        onApproved={handleApproved}
+      />
     </div>
+
+    {/* One consolidated action once ANY real approval has succeeded this
+        session — accumulated across every card and every mission turn,
+        not per-card. checkout_url is per-connector (the merchant's own
+        cart page), so a user who approved onion, potato and chili powder
+        across three separate cards sees ONE Instamart checkout link here
+        with the real running item count, instead of hunting down three
+        identical "complete checkout" links buried in already-scrolled-past
+        cards. */}
+    {approvedCheckouts.length > 0 && (
+      <div className="border-2 border-signal bg-signal/5 hard-lg p-4 flex flex-col gap-3 mt-4">
+        <span className="label-micro text-signal">
+          {approvedCheckouts.reduce((n, c) => n + c.itemsWritten, 0)} ITEM(S) APPROVED THIS SESSION — FINISH ON THE MERCHANT'S OWN SITE
+        </span>
+        <div className="flex flex-wrap gap-2">
+          {approvedCheckouts.map((c) => (
+            <a
+              key={c.connectorId}
+              href={c.checkoutUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="label-micro border-2 border-signal bg-signal text-background px-3 py-2 hover:hard-signal transition-all duration-150"
+            >
+              CHECKOUT ON {c.connectorId.toUpperCase()} ({c.itemsWritten} ITEM{c.itemsWritten === 1 ? "" : "S"}) →
+            </a>
+          ))}
+        </div>
+      </div>
+    )}
     </>
   );
 }
