@@ -2739,3 +2739,34 @@ model behaves when a connector is unavailable. The new `failed_connector_ids`
 signal is also now the honest way to detect this class of problem going
 forward, in the UI, without relying on a stale token-existence check or
 the model's own account of what happened.
+
+### Third addendum -- visually testing the fix found a gap in the fix's own UI
+
+Testing this live in the actual Mission page (not just the API): the
+model's reply was now honest and specific ("the swiggy-instamart
+connector failed to connect — the server rejected its authorization
+token as expired, HTTP 401... a connection issue on the connector's end,
+not something I can retry around"), matching real, verified data. But the
+Mission Trace panel still showed the old, generic "ELIGIBLE — NOT CALLED
+YET" label for the connector node, with no mention of the verified
+failure at all.
+
+Cause: `PipelineCanvas.tsx`'s new "MCP CONNECTION FAILED" node was only
+ever added as a SEPARATE node, gated behind `hasConnector` (i.e.
+`step.connector_id` being non-null). But the exact scenario this whole
+fix exists for — the ONE eligible connector's handshake failing before
+any tool call can even be attempted — is precisely the case where
+`chosen_connector_id` stays null all turn, so `hasConnector` is false and
+the new node never rendered; the primary connector node fell through to
+its old generic fallback instead.
+
+Fixed by checking for a verified failure in the PRIMARY connector node's
+own construction, before its generic "not called yet" fallback, not only
+in the separate supplementary node used for the multi-connector case.
+
+Lesson: the same class of gap this whole investigation is about — a
+signal that exists but isn't checked in the specific place that matters
+most — can hide inside your own fix for it. Testing the actual UI a user
+sees, not just the API response shape, is what caught this; the API-level
+verification in the prior addendum was correct and complete for the data
+layer, and still missed a real, visible gap one layer up.

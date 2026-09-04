@@ -72,14 +72,31 @@ function nodesFor(step: MissionStep): NodeSpec[] {
   const hasConnector = !!step.connector_id;
   const wasEligible = step.eligible_connector_ids.length > 0;
   const isCommerce = step.category.startsWith("COMMERCE");
+  // Real, verified evidence (the Agent SDK's own connection report, never
+  // a model claim) that an eligible connector's MCP handshake failed this
+  // turn. Real, live-found gap (FAILURE_LOG.md F-044's second addendum):
+  // when NO connector ever got a successful call (chosen_connector_id
+  // stays null — exactly what happens when the ONE eligible connector's
+  // handshake fails before any tool call can be made), this used to fall
+  // straight through to the generic "ELIGIBLE — NOT CALLED YET" label
+  // even though a specific, true, verified reason was available. Checked
+  // before that generic fallback, not alongside it.
+  const verifiedFailedThisTurn = step.eligible_connector_ids.filter((id) =>
+    step.failed_connector_ids.includes(id),
+  );
   const connectorNode: NodeSpec = hasConnector
     ? { kind: "CONNECTOR", value: step.connector_id!, status: "ok", meta: "ELIGIBILITY PASSED" }
-    : wasEligible
-      // Eligible AND authenticated — the model just hasn't called it yet
-      // this turn (it asked a clarifying question first). "NOT
-      // AUTHENTICATED" here would be a real, checkable lie.
-      ? { kind: "CONNECTOR", value: step.eligible_connector_ids.join(", "), status: "paused", meta: "ELIGIBLE — NOT CALLED YET" }
-      : { kind: "CONNECTOR", value: "NONE ELIGIBLE", status: "blocked", meta: "NOT AUTHENTICATED" };
+    : verifiedFailedThisTurn.length > 0
+      ? {
+          kind: "CONNECTOR", value: verifiedFailedThisTurn.join(", "), status: "blocked",
+          meta: "MCP CONNECTION FAILED — VERIFIED BY THE AGENT SDK, NOT A MODEL CLAIM",
+        }
+      : wasEligible
+        // Eligible AND authenticated — the model just hasn't called it yet
+        // this turn (it asked a clarifying question first). "NOT
+        // AUTHENTICATED" here would be a real, checkable lie.
+        ? { kind: "CONNECTOR", value: step.eligible_connector_ids.join(", "), status: "paused", meta: "ELIGIBLE — NOT CALLED YET" }
+        : { kind: "CONNECTOR", value: "NONE ELIGIBLE", status: "blocked", meta: "NOT AUTHENTICATED" };
   const nodes: NodeSpec[] = [
     { kind: "CAPABILITY", value: step.category, status: "ok" },
     connectorNode,
