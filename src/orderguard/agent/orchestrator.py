@@ -215,13 +215,26 @@ async def run_agent_turn(
     unverified_ids = [c.id for c in eligible if c.id not in previously_attempted_connector_ids]
     effective_message = message
     if session_context is not None and unverified_ids:
+        # Real, live-observed follow-up to F-044 (see FAILURE_LOG.md): a
+        # softer, contextual version of this note changed the model's
+        # PROSE ("I just attempted X for real... expired-token error") but
+        # did not force an actual tool call -- it echoed the note's own
+        # vocabulary into a more convincing-sounding version of the exact
+        # same fabrication. Phrased as an explicit instruction with a named
+        # prohibition on the specific failure mode just observed, not
+        # background context to weigh.
+        ids_text = ", ".join(unverified_ids)
         effective_message = (
             f"{message}\n\n"
-            f"[System note, not from the user: {', '.join(unverified_ids)} "
-            "eligible for this request but not yet called with a real tool "
-            "request anywhere in this conversation -- any earlier claim about "
-            "its status was never actually verified. Attempt it for real this "
-            "turn before saying anything about whether it works.]"
+            f"[System instruction, not from the user: you have not called "
+            f"{ids_text} with a real tool request anywhere in this "
+            "conversation yet. Before you write anything else, call it. "
+            "Do not write a sentence like \"I attempted X\" or \"X failed/"
+            "rejected the connection\" unless you are describing a tool_use "
+            "block you actually emitted THIS turn and a real tool_result "
+            "you actually received back for it -- if you have not made that "
+            "call, say plainly that you have not searched it yet, nothing "
+            "more.]"
         )
 
     turn_started = time.monotonic()

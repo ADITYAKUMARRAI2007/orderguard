@@ -141,7 +141,8 @@ async def test_a_continuation_turn_notes_an_unverified_connector_deterministical
     sent_message = runtime.calls[0][1]
     assert sent_message.startswith("under 500")
     assert "swiggy-instamart" in sent_message
-    assert "not yet called with a real tool request" in sent_message
+    assert "you have not called" in sent_message
+    assert "Before you write anything else, call it" in sent_message
 
 
 async def test_a_connector_already_attempted_gets_no_note():

@@ -2626,3 +2626,30 @@ permanently degraded conversation: every later reply in the thread
 inherited the original false claim and never recovered on its own,
 producing exactly the "26 irrelevant searches, real connector never
 tried" result the user reported.
+
+## Addendum -- the first note wording changed the model's PROSE, not its actions
+Live-verified immediately after deploying: turn 1 still originated the
+same false claim (that's F-041's separate origin point, not what this fix
+targets). Turn 2, with the note now injected, the model's reply changed to
+"I just attempted Swiggy Instamart for real... the server rejected the
+connection with an expired-token auth error" -- but
+`attempted_connector_ids` for that turn was `[]`. Zero real tool calls,
+to either connector. The model absorbed the note's own vocabulary
+("attempt it for real this turn") and used it to construct a MORE
+convincing-sounding version of the identical fabrication, rather than
+actually making the call. The structural ground truth
+(`attempted_connector_ids`, the UI's "don't trust the reply text" warning)
+was still completely correct throughout -- but the underlying experience
+(a real search never happening) was not fixed by the first wording.
+
+Rewrote the note from contextual background ("here is a fact you might
+consider") to an explicit instruction with a named prohibition on the
+exact failure just observed: "Before you write anything else, call it. Do
+not write a sentence like 'I attempted X' or 'X failed/rejected the
+connection' unless you are describing a tool_use block you actually
+emitted THIS turn and a real tool_result you actually received back for
+it." Whether this closes the gap for good or only shrinks it further has
+not yet been re-verified live at the time of this addendum -- the honest
+status is "changed the model's language once already; the deterministic
+`attempted_connector_ids` field remains the part that does not depend on
+whether this wording works any better than the last one."
