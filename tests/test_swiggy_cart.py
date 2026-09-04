@@ -143,6 +143,44 @@ async def test_an_unserviceable_cart_address_is_treated_as_empty_not_blocked_for
     assert "not serviceable" in result["cart_read_skipped_reason"]
 
 
+async def test_a_stale_cart_anchors_store_being_unavailable_is_also_treated_as_empty():
+    """Regression for a real, reproduced incident (2026-09-04): every
+    approval in a real mission failed pre-write with "The store is
+    unavailable at the moment. Please try again after some time." for over
+    an hour straight, while search_products -- run moments earlier in the
+    SAME turn against the SAME address -- kept succeeding with full real
+    catalogs. A genuinely closed/degraded store would fail search too; it
+    never did. Same root shape as the "not serviceable" case: get_cart has
+    no address argument, so this is Swiggy's OTHER wording for "the cart's
+    stale anchor point can't be read" -- not a real block on writing to the
+    address that was actually searched."""
+    calls = {"get_cart": 0}
+
+    async def fake_call(*, url, bearer_token, tool_name, arguments):
+        if tool_name == "get_cart":
+            calls["get_cart"] += 1
+            if calls["get_cart"] == 1:
+                raise DirectMcpCallError(
+                    "get_cart returned an error: The store is unavailable at "
+                    "the moment. Please try again after some time."
+                )
+            return {"items": [{"spinId": "NEW", "quantity": 1}]}
+        return {"written": arguments}
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call) as mock:
+        result = await add_to_instamart_cart(
+            bearer_token="tok", address_id="work-addr", spin_id="NEW", quantity=1,
+        )
+
+    write_call = mock.call_args_list[1]
+    assert write_call.kwargs["arguments"] == {
+        "selectedAddressId": "work-addr", "items": [{"spinId": "NEW", "quantity": 1}],
+    }
+    assert result["preserved_existing_items"] == 0
+    assert result["cart_read_skipped_reason"] is not None
+    assert "store is unavailable" in result["cart_read_skipped_reason"]
+
+
 async def test_a_normal_successful_read_never_sets_the_skipped_reason():
     _, fake_call = _stateful_server([])
 

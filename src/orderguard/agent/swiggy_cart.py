@@ -39,6 +39,24 @@ to confirm the exact spin_id/quantity actually landed before this function
 ever reports success — any mismatch, timeout, or read failure at that
 point fails closed with ``SwiggyCartError``, the same as every other
 unverified claim on this path.
+
+Real, reproduced incident (2026-09-04, same session): the pre-write
+``get_cart`` read then failed on every single approval, across many
+distinct real missions and items, for over an hour straight, always with
+"The store is unavailable at the moment. Please try again after some
+time." -- while ``search_products``, run moments earlier in the SAME
+turn against the SAME address, kept returning full real catalogs the
+entire time. A genuinely closed or degraded store would fail search too;
+it never did. This is the same root shape as the "not serviceable" case
+above, just Swiggy's OTHER wording for it: ``get_cart`` has no address
+argument, so it is reading whatever address the account's cart is stuck
+on from a PRIOR session -- not the one just searched -- and that stale
+anchor's store being paused, closed, or unavailable says nothing about
+whether the store just searched can be written to. Recognized as the same
+"nothing real to preserve" case, under the same reasoning: a cart that
+cannot even be read because its own anchor point is unavailable holds
+nothing that could be merged into a write going to a different address
+anyway.
 """
 
 from __future__ import annotations
@@ -52,10 +70,12 @@ __all__ = ["SwiggyCartError", "CartItem", "add_to_instamart_cart"]
 
 _URL = "https://mcp.swiggy.com/im"
 
-# get_cart's own real error text for this specific case, verified live —
-# matched narrowly so no other read failure (auth, network, an unrecognized
-# server error) is ever treated this way; those still fail closed.
-_ADDRESS_NOT_SERVICEABLE = "not serviceable"
+# get_cart's own real error text for this class of failure -- a stale cart
+# anchor, not a real block on the write -- verified live in two distinct
+# wordings. Matched narrowly so no other read failure (auth, network, an
+# unrecognized server error) is ever treated this way; those still fail
+# closed.
+_STALE_CART_ANCHOR_MARKERS = ("not serviceable", "store is unavailable")
 
 
 class SwiggyCartError(RuntimeError):
@@ -115,15 +135,20 @@ async def add_to_instamart_cart(
             url=_URL, bearer_token=bearer_token, tool_name="get_cart", arguments={},
         )
     except DirectMcpCallError as exc:
-        if _ADDRESS_NOT_SERVICEABLE not in str(exc).lower():
+        exc_text = str(exc).lower()
+        matched_marker = next(
+            (marker for marker in _STALE_CART_ANCHOR_MARKERS if marker in exc_text), None,
+        )
+        if matched_marker is None:
             raise SwiggyCartError(f"could not read the current cart before writing: {exc}") from exc
-        # See this module's own docstring: a cart anchored to an address
-        # that is no longer serviceable holds nothing deliverable to the
-        # newly picked address either -- there is nothing real to preserve,
+        # See this module's own docstring: a cart whose own anchor point
+        # can't even be read (address no longer serviceable, or that
+        # anchor's store currently unavailable) holds nothing deliverable
+        # through THIS write either -- there is nothing real to preserve,
         # not something we're guessing away.
         current = None
         cart_read_skipped_reason = (
-            "could not verify the existing cart: its address was not serviceable, "
+            f"could not verify the existing cart ({matched_marker}), "
             "so it was treated as empty before writing"
         )
 
