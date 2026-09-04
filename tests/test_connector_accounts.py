@@ -138,6 +138,39 @@ def test_check_encryption_ready_is_silent_when_a_key_is_configured():
     store.check_encryption_ready()  # must not raise
 
 
+def test_mcp_health_is_unset_until_a_real_turn_reports_it(store):
+    """Real, live-found gap (2026-09-04, see FAILURE_LOG.md F-044's fourth
+    addendum): a user reported the Connectors page showing "CONNECTED" the
+    entire time a real connector was verifiably failing every turn --
+    `status`/`expires_at` only ever reflect token presence and a locally
+    stored expiry guess, never whether the live MCP handshake actually
+    succeeds. `mcp_health` starts unset (None, None) -- distinct from
+    either a verified success or failure -- until a real mission turn
+    reports something."""
+    store.store_token("swiggy-instamart", "real-bearer-token", expires_in_seconds=None)
+    assert store.mcp_health("swiggy-instamart") == (None, None)
+
+
+def test_recording_a_real_mcp_status_updates_health(store):
+    store.store_token("swiggy-instamart", "real-bearer-token", expires_in_seconds=None)
+    store.record_mcp_status("swiggy-instamart", "failed")
+    status, checked_at = store.mcp_health("swiggy-instamart")
+    assert status == "failed"
+    assert checked_at is not None
+
+    store.record_mcp_status("swiggy-instamart", "connected")
+    status, checked_at = store.mcp_health("swiggy-instamart")
+    assert status == "connected"
+
+
+def test_recording_mcp_status_for_an_unconnected_connector_does_nothing(store):
+    """No stored token means no account row to correct -- this must never
+    silently create one or imply a connection that was never made."""
+    store.record_mcp_status("swiggy-instamart", "failed")
+    assert store.mcp_health("swiggy-instamart") == (None, None)
+    assert store.status("swiggy-instamart") == "AUTH_REQUIRED"
+
+
 def test_pkce_pair_is_a_valid_s256_challenge():
     import base64
     import hashlib

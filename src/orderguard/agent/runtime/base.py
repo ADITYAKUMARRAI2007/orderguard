@@ -77,6 +77,15 @@ class AgentTurnResult:
     # status (`mcp_servers: [{"name": ..., "status": "failed"}]`); this
     # was captured in a diagnostic print but never surfaced as data before.
     failed_connector_ids: list[str] = field(default_factory=list)
+    # Real, verified connection status for every connector the SDK actually
+    # reported on this turn, keyed by connector_id, value whatever raw
+    # status string it gave ("failed", "connected", or anything else it
+    # ever reports) -- never a subset, never a model claim. See F-044's
+    # fourth addendum: `/api/agent/connectors`'s own status page kept
+    # showing "CONNECTED" from a stale token-existence check even while a
+    # connector's real handshake was verifiably failing every turn; this is
+    # what lets that page show real, currently-verified health instead.
+    mcp_server_statuses: dict[str, str] = field(default_factory=dict)
 
 
 class AgentRuntime(Protocol):

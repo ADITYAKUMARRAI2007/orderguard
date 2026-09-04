@@ -116,6 +116,15 @@ class MissionStepResult:
     # here, its absence from attempted_connector_ids is fully explained and
     # not a sign of the model avoiding a real, callable tool.
     failed_connector_ids: list[str] = field(default_factory=list)
+    # Real, verified connection status for every connector the runtime
+    # actually reported on THIS turn — see runtime/base.py::AgentTurnResult
+    # and FAILURE_LOG.md F-044's fourth addendum: /api/agent/connectors's
+    # own status page kept showing a stale "CONNECTED" from a token-
+    # existence check alone, even while a real handshake was verifiably
+    # failing every turn. app.py persists this into ConnectorAccountStore
+    # after every mission so that page can show real, currently-verified
+    # health instead.
+    mcp_server_statuses: dict[str, str] = field(default_factory=dict)
     # Opaque continuation state for whichever runtime handled this step —
     # see runtime/base.py::AgentTurnResult. The caller (missions.py/app.py)
     # persists this and passes it back on the NEXT call in the same
@@ -345,6 +354,7 @@ async def run_agent_turn(
         eligible_connector_ids=[c.id for c in eligible],
         attempted_connector_ids=attempted_connector_ids,
         failed_connector_ids=turn.failed_connector_ids,
+        mcp_server_statuses=turn.mcp_server_statuses,
     )
 
 

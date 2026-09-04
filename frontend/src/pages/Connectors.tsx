@@ -9,6 +9,16 @@ import { StaggerHeading } from "@/components/StaggerHeading";
 
 const MANUAL_TOKEN_CONNECTORS = new Set(["github"]);
 
+function timeAgo(iso: string): string {
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 export function Connectors() {
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [byokInput, setByokInput] = useState("");
@@ -186,6 +196,27 @@ export function Connectors() {
                   <span className="font-medium text-sm">{c.label}</span>
                   <Badge variant={c.status === "CONNECTED" ? "default" : "secondary"}>{c.status}</Badge>
                 </div>
+                {/* Real, verified MCP handshake status from the last actual
+                    mission turn — never inferred from token presence alone.
+                    See FAILURE_LOG.md F-044's fourth addendum: this page
+                    kept showing "CONNECTED" above the whole time a real
+                    connector was verifiably failing every turn, because
+                    nothing here checked live connection health until now.
+                    Shown only once we actually have real evidence — a
+                    connector never attempted this deployment says nothing
+                    here rather than implying a status we don't know. */}
+                {c.mcp_verified_status && (
+                  <div className="flex items-center gap-1.5">
+                    <Badge variant={c.mcp_verified_status === "connected" ? "default" : "destructive"} className="text-[10px]">
+                      MCP {c.mcp_verified_status === "connected" ? "VERIFIED LIVE" : "HANDSHAKE FAILED"}
+                    </Badge>
+                    {c.mcp_verified_checked_at && (
+                      <span className="text-[10px] text-muted-foreground">
+                        checked {timeAgo(c.mcp_verified_checked_at)}
+                      </span>
+                    )}
+                  </div>
+                )}
                 <div className="text-xs text-muted-foreground">
                   {c.category} · {c.backend_type} · evidence: {c.evidence}
                 </div>

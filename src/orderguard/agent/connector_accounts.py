@@ -75,6 +75,19 @@ class ConnectorAccount(SQLModel, table=True):
     external_account_ref: str = ""
     created_at: datetime = Field(default_factory=_now)
     updated_at: datetime = Field(default_factory=_now)
+    # Real, verified connection health from the LAST actual mission turn
+    # that touched this connector -- the Agent SDK's own MCP handshake
+    # report, never a model claim and never inferred from `expires_at`
+    # alone. Real, live-found gap (2026-09-04, see FAILURE_LOG.md F-044's
+    # fourth addendum): `status`/`expires_at` above only ever reflect
+    # whether a token row exists and whether WE locally think it should
+    # still be valid -- neither one can catch a token that was silently
+    # revoked or expired server-side without also updating our own record.
+    # A user reported the Connectors page showing "CONNECTED" the entire
+    # time a real connector was verifiably failing every turn; this is
+    # what lets that page show truth instead of a stale local guess.
+    last_mcp_status: str | None = None
+    last_mcp_checked_at: datetime | None = None
 
 
 def accounts_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
@@ -91,27 +104,41 @@ def _migrate_account_columns(engine: Engine) -> None:
     account_id uniqueness remains enforced by owner/connector access patterns
     for migrated local databases; fresh databases receive the full model.
 
-    SQLite-only: ``PRAGMA table_info`` has no Postgres equivalent, and it
-    does not need one here. A brand-new Postgres database's ``connectoraccount``
-    table already has every column ``create_all`` (called just before this,
-    in ``accounts_engine``) puts there — this function only exists to patch
-    OLD, already-created SQLite files from before these columns existed.
+    Handles both dialects — real, live-found gap (2026-09-04, see
+    FAILURE_LOG.md F-042/F-044): this table shipped to the live Postgres
+    database long before ``last_mcp_status``/``last_mcp_checked_at``
+    existed, so "a fresh Postgres database already has every column"
+    (true when this function was first written, for the OLDER columns
+    below) does not hold for these new ones. ``create_all`` only ever adds
+    whole new tables, never new columns on an existing one, on either
+    dialect.
     """
-    if engine.dialect.name != "sqlite":
-        return
-    additions = {
+    sqlite_additions = {
         "account_id": "VARCHAR NOT NULL DEFAULT ''",
         "auth_strategy": "VARCHAR NOT NULL DEFAULT 'CUSTOM'",
         "refresh_token_encrypted": "BLOB",
         "external_account_ref": "VARCHAR NOT NULL DEFAULT ''",
+        "last_mcp_status": "VARCHAR",
+        "last_mcp_checked_at": "TIMESTAMP",
     }
-    with engine.begin() as connection:
-        rows = connection.exec_driver_sql("PRAGMA table_info(connectoraccount)").fetchall()
-        existing = {row[1] for row in rows}
-        for name, ddl in additions.items():
-            if name not in existing:
+    if engine.dialect.name == "sqlite":
+        with engine.begin() as connection:
+            rows = connection.exec_driver_sql("PRAGMA table_info(connectoraccount)").fetchall()
+            existing = {row[1] for row in rows}
+            for name, ddl in sqlite_additions.items():
+                if name not in existing:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE connectoraccount ADD COLUMN {name} {ddl}"
+                    )
+    else:
+        pg_additions = {
+            "last_mcp_status": "VARCHAR",
+            "last_mcp_checked_at": "TIMESTAMP",
+        }
+        with engine.begin() as connection:
+            for name, ddl in pg_additions.items():
                 connection.exec_driver_sql(
-                    f"ALTER TABLE connectoraccount ADD COLUMN {name} {ddl}"
+                    f"ALTER TABLE connectoraccount ADD COLUMN IF NOT EXISTS {name} {ddl}"
                 )
 
 
@@ -224,6 +251,30 @@ class ConnectorAccountStore:
         if row.status == "CONNECTED" and self._is_expired(row):
             return "EXPIRED"
         return row.status  # type: ignore[return-value]
+
+    def record_mcp_status(self, connector_id: str, status: str) -> None:
+        """Real, verified evidence from an actual mission turn's MCP
+        handshake — see FAILURE_LOG.md F-044's fourth addendum. Only
+        updates an EXISTING account row; a connector with no stored token
+        has nothing to correct here, and this method never creates a row
+        or grants a connection on its own."""
+        with Session(self._engine) as db:
+            row = self._select(db, connector_id)
+            if row is None:
+                return
+            row.last_mcp_status = status
+            row.last_mcp_checked_at = _now()
+            db.add(row)
+            db.commit()
+
+    def mcp_health(self, connector_id: str) -> tuple[str | None, datetime | None]:
+        """The last REAL, verified MCP status for this connector and when
+        it was checked — ``(None, None)`` if a mission has never actually
+        attempted it yet this deployment, or no account row exists."""
+        row = self._get(connector_id)
+        if row is None:
+            return None, None
+        return row.last_mcp_status, row.last_mcp_checked_at
 
     def _get(self, connector_id: str) -> ConnectorAccount | None:
         with Session(self._engine) as db:

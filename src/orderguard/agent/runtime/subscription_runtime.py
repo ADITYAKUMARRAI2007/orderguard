@@ -187,6 +187,7 @@ class SubscriptionAgentRuntime:
         new_session_id: str | None = None
         result_text: str | None = None
         failed_connector_ids: list[str] = []
+        mcp_server_statuses: dict[str, str] = {}
 
         def capture_result(block: ToolResultBlock, fallback: object | None = None) -> None:
             call = calls_by_id.get(block.tool_use_id)
@@ -241,18 +242,29 @@ class SubscriptionAgentRuntime:
                 # real connection failure was dismissed as a hallucination
                 # for multiple fix cycles, because this init message was
                 # never read past `session_id` before -- it was reporting
-                # exactly this the whole time.
+                # exactly this the whole time. Captures whatever status the
+                # SDK reports for EVERY server it lists (not only "failed"),
+                # so a genuinely working connector's real status can be
+                # recorded too -- not just its absence of failure. See
+                # F-044's fourth addendum: the Connectors page itself was
+                # still showing a stale "CONNECTED" based only on whether a
+                # token row exists, never on whether the live handshake
+                # actually succeeds.
                 for server_status in init_data.get("mcp_servers", []):
-                    if server_status.get("status") == "failed":
-                        spec = spec_by_server.get(server_status.get("name", ""))
-                        connector_id = spec.connector_id if spec else server_status.get("name")
-                        if connector_id and connector_id not in failed_connector_ids:
-                            failed_connector_ids.append(connector_id)
-                            print(
-                                f"[agent] MCP handshake failed for {connector_id!r} "
-                                f"(server_name={server_status.get('name')!r})",
-                                file=sys.stderr,
-                            )
+                    server_name = server_status.get("name", "")
+                    spec = spec_by_server.get(server_name)
+                    connector_id = spec.connector_id if spec else server_name
+                    status = server_status.get("status")
+                    if not connector_id or not status:
+                        continue
+                    mcp_server_statuses[connector_id] = status
+                    if status == "failed" and connector_id not in failed_connector_ids:
+                        failed_connector_ids.append(connector_id)
+                        print(
+                            f"[agent] MCP handshake failed for {connector_id!r} "
+                            f"(server_name={server_name!r})",
+                            file=sys.stderr,
+                        )
             if isinstance(message, SystemMessage) and message.subtype == "api_retry":
                 data = getattr(message, "data", {}) or {}
                 if data.get("error_status") == 401 or data.get("error") == "authentication_failed":
@@ -330,4 +342,5 @@ class SubscriptionAgentRuntime:
             usage=usage,
             session_context={"resume": new_session_id} if new_session_id else {},
             failed_connector_ids=failed_connector_ids,
+            mcp_server_statuses=mcp_server_statuses,
         )

@@ -1893,6 +1893,10 @@ async def agent_run(request: AgentRunRequest) -> dict:
         "category": step.category, "connector_id": step.connector_id,
         "result_count": len(step.results),
     })
+    # Real, verified MCP health, global per connector — see F-044's fourth
+    # addendum. Same recording as the mission endpoint below.
+    for connector_id, status in step.mcp_server_statuses.items():
+        ACCOUNTS.record_mcp_status(connector_id, status)
     return {
         "category": step.category,
         "connector_id": step.connector_id,
@@ -2009,6 +2013,15 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
                     failed_connector_ids=step.failed_connector_ids,
                 )
 
+    # Real, verified MCP health, global per connector (not scoped to this
+    # conversation — infra status isn't a per-thread fact). See
+    # FAILURE_LOG.md F-044's fourth addendum: /api/agent/connectors kept
+    # showing a stale "CONNECTED" from a token-existence check alone;
+    # this is what lets it show truth instead.
+    for step in mission.steps:
+        for connector_id, status in step.mcp_server_statuses.items():
+            ACCOUNTS.record_mcp_status(connector_id, status)
+
     _MISSIONS[mission.mission_id] = mission
     append_event(AUDIT, "mission_created", {
         "mission_id": mission.mission_id,
@@ -2047,28 +2060,37 @@ def agent_connectors() -> dict:
     """
     detected, detect_error = detect_claude_code_connectors()
     registry = merged_registry(detected)
-    return {
-        "detect_error": detect_error,
-        "connectors": [
-            {
-                "id": c.id, "label": c.label, "category": c.category,
-                "backend_type": c.backend_type.value, "evidence": c.evidence.value,
-                "capability": c.capability.value, "auth": c.auth,
-                "status": (
-                    "CONNECTED"
-                    if c.auth != "connector_account"
-                    else ACCOUNTS.status(c.id)
-                ),
-                "tools": [{"name": t.name, "risk_tier": t.risk_tier} for t in c.tools],
-                # Visible and categorised, but a connector with no
-                # risk-classified tools can offer the model nothing — see
-                # agent/dynamic_registry.py's safety note.
-                "routable": bool(c.tools),
-                "note": c.note,
-            }
-            for c in registry
-        ],
-    }
+    connectors_json = []
+    for c in registry:
+        # Real, verified evidence from the last actual mission turn that
+        # touched this connector — the Agent SDK's own MCP handshake
+        # report, never inferred from whether a token row merely exists.
+        # See FAILURE_LOG.md F-044's fourth addendum: a user reported this
+        # page showing "CONNECTED" the entire time a real connector was
+        # verifiably failing every turn, because `status` above only ever
+        # checks token presence/local expiry, not live connection health.
+        # `None` here means "never actually attempted this deployment" —
+        # a real, honest state distinct from either CONNECTED or FAILED.
+        mcp_status, mcp_checked_at = ACCOUNTS.mcp_health(c.id) if c.auth == "connector_account" else (None, None)
+        connectors_json.append({
+            "id": c.id, "label": c.label, "category": c.category,
+            "backend_type": c.backend_type.value, "evidence": c.evidence.value,
+            "capability": c.capability.value, "auth": c.auth,
+            "status": (
+                "CONNECTED"
+                if c.auth != "connector_account"
+                else ACCOUNTS.status(c.id)
+            ),
+            "mcp_verified_status": mcp_status,
+            "mcp_verified_checked_at": mcp_checked_at.isoformat() if mcp_checked_at else None,
+            "tools": [{"name": t.name, "risk_tier": t.risk_tier} for t in c.tools],
+            # Visible and categorised, but a connector with no
+            # risk-classified tools can offer the model nothing — see
+            # agent/dynamic_registry.py's safety note.
+            "routable": bool(c.tools),
+            "note": c.note,
+        })
+    return {"detect_error": detect_error, "connectors": connectors_json}
 
 
 @app.get("/api/runtime/status")

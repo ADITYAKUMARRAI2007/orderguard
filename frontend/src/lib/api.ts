@@ -19,6 +19,17 @@ export interface AgentConnector {
   capability: string;
   auth: string;
   status: string;
+  // Real, verified MCP handshake status from the LAST actual mission turn
+  // that touched this connector — the Agent SDK's own connection report,
+  // never inferred from whether a token merely exists. null means "never
+  // actually attempted this deployment," a real, honest state distinct
+  // from either a verified success or failure. See FAILURE_LOG.md F-044's
+  // fourth addendum: `status` above only ever reflects token presence and
+  // a locally stored expiry guess — a real user saw this page keep
+  // showing "CONNECTED" while a connector was verifiably failing every
+  // turn, because nothing here ever checked live connection health.
+  mcp_verified_status: string | null;
+  mcp_verified_checked_at: string | null;
   tools: ToolInfo[];
   routable: boolean;
   note: string;

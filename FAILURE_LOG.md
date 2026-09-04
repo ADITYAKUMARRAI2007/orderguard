@@ -2770,3 +2770,58 @@ most — can hide inside your own fix for it. Testing the actual UI a user
 sees, not just the API response shape, is what caught this; the API-level
 verification in the prior addendum was correct and complete for the data
 layer, and still missed a real, visible gap one layer up.
+
+### Fourth addendum -- the Connectors page itself was still lying
+
+A user pointed out the obvious next question: if Swiggy Instamart's real
+handshake was verifiably failing, why does the Connectors page still
+always say "CONNECTED"? Checked directly: `/api/agent/connectors`'s
+status came from `ACCOUNTS.status(c.id)`, which only ever checks whether
+a token row exists and, at best, whether a LOCALLY stored `expires_at`
+guess has passed — never whether the connector's live MCP handshake is
+currently succeeding. A token revoked or expired server-side, without us
+also being told, looks identical to a healthy one under that check
+forever. This is the exact same "unverifiable proxy mistaken for the real
+thing" mistake as the second addendum's root cause, just on a different
+page.
+
+### Fix
+`ConnectorAccount` gained `last_mcp_status`/`last_mcp_checked_at`,
+migrated on both dialects (this table shipped to production long before
+this session; same lesson as every prior migration in this file — never
+assume a live Postgres table is fresh). `ConnectorAccountStore` gained
+`record_mcp_status()` (updates an existing row only — never creates one,
+never implies a connection that was never made) and `mcp_health()` (real
+status + when it was checked, or `(None, None)` if never actually
+attempted this deployment — a real, honest third state, not folded into
+either CONNECTED or FAILED). `subscription_runtime.py`'s init-message
+handling now captures the SDK's FULL per-server status map, not only
+failures, via a new `AgentTurnResult.mcp_server_statuses` field, threaded
+through `MissionStepResult` and both `app.py` mission/run endpoints, which
+now call `ACCOUNTS.record_mcp_status()` for every connector actually
+reported on after each real mission turn. `/api/agent/connectors` exposes
+this as `mcp_verified_status`/`mcp_verified_checked_at` alongside the
+existing (now-labeled-honestly-limited) `status` field, and the
+Connectors page renders it as its own badge — "MCP HANDSHAKE FAILED,
+checked 3m ago" instead of a silent, permanent "CONNECTED".
+
+### Regression test
+`tests/test_connector_accounts.py`: health starts unset until a real turn
+reports it; recording updates it; recording for a connector with no
+stored token is a no-op, never a phantom row.
+
+### Lesson
+Every fix in this whole F-044 thread eventually traced back to the same
+shape of mistake: a proxy value (a token's existence, a locally-stored
+expiry, a static page load) was being read as if it answered "is this
+working right now," when it only ever answered a narrower, related
+question. The fix each time was the same move — find the primary, live
+signal that was already available and had simply never been read, and
+make THAT the source of truth instead of adding another layer of
+inference on top of the proxy.
+
+### Production relevance
+Direct — this is the actual, permanent fix for "why does it always say
+connected," not a one-time correction. It self-updates on every real
+mission turn from here forward, for any connector, not just Swiggy
+Instamart.
