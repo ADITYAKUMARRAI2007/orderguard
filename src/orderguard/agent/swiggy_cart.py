@@ -24,6 +24,21 @@ Treating that specific failure as "nothing to preserve" and proceeding
 with the new item alone is not guessing what a real cart hides — every
 other read failure (auth, network, an unrecognized error) still fails
 closed exactly as before.
+
+Real, reproduced incident (2026-09-04): a live end-to-end approval reported
+"CART UPDATED" — ``update_cart`` returned no error — yet the real Swiggy
+Instamart site showed nothing added. ``update_cart``'s own response was
+never actually checked for what it claims; a non-error reply was treated
+as proof, exactly the kind of trust this project refuses everywhere else
+on the money path. ``commerce/shopify_mcp.py::read_cart`` already states
+the correct discipline for this same class of write ("a separate round
+trip from add_to_cart... this tells us what the store did"), applied there
+but missing here. Fixed by making the write's own reply advisory only: a
+second, independent ``get_cart`` read-back after the write is now required
+to confirm the exact spin_id/quantity actually landed before this function
+ever reports success — any mismatch, timeout, or read failure at that
+point fails closed with ``SwiggyCartError``, the same as every other
+unverified claim on this path.
 """
 
 from __future__ import annotations
@@ -88,7 +103,7 @@ async def add_to_instamart_cart(
     merged = [*existing, CartItem(spin_id=spin_id, quantity=quantity)]
 
     try:
-        written = await call_tool_directly(
+        await call_tool_directly(
             url=_URL, bearer_token=bearer_token, tool_name="update_cart",
             arguments={
                 "selectedAddressId": address_id,
@@ -98,8 +113,32 @@ async def add_to_instamart_cart(
     except DirectMcpCallError as exc:
         raise SwiggyCartError(f"cart write failed: {exc}") from exc
 
+    # update_cart returning without an error is not proof anything actually
+    # landed -- see this module's docstring. Read the real cart back,
+    # independently, before ever telling the caller it worked.
+    try:
+        confirmed = await call_tool_directly(
+            url=_URL, bearer_token=bearer_token, tool_name="get_cart", arguments={},
+        )
+    except DirectMcpCallError as exc:
+        raise SwiggyCartError(
+            f"update_cart returned no error, but the real cart could not be "
+            f"read back to confirm it: {exc}"
+        ) from exc
+
+    confirmed_items = (confirmed or {}).get("items", [])
+    landed = any(
+        item.get("spinId") == spin_id and item.get("quantity") == quantity
+        for item in confirmed_items
+    )
+    if not landed:
+        raise SwiggyCartError(
+            "update_cart returned no error, but the item is not actually in "
+            "the real cart when read back independently -- nothing was added"
+        )
+
     return {
-        "cart": written,
+        "cart": confirmed,
         "items_written": [{"spin_id": i.spin_id, "quantity": i.quantity} for i in merged],
         "preserved_existing_items": len(existing),
         "cart_read_skipped_reason": cart_read_skipped_reason,

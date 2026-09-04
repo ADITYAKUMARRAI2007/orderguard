@@ -1,8 +1,10 @@
 """Real Swiggy Instamart cart writes — mocked at the MCP call boundary, so
-this suite stays offline like everything else in this project. The one
-invariant that matters most: update_cart's real schema REPLACES the whole
-cart, so a write must never happen without first reading and preserving
-whatever else is already there.
+this suite stays offline like everything else in this project. Two
+invariants matter most: update_cart's real schema REPLACES the whole cart,
+so a write must never happen without first reading and preserving whatever
+else is already there; and update_cart's own "no error" reply is never
+trusted as proof of what actually landed — a real, independent get_cart
+read-back after the write is required before this module reports success.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -13,16 +15,30 @@ from orderguard.agent.mcp_direct_client import DirectMcpCallError
 from orderguard.agent.swiggy_cart import SwiggyCartError, add_to_instamart_cart
 
 
-async def test_adding_to_an_empty_cart_writes_only_the_new_item():
-    calls = []
+def _stateful_server(initial_items: list[dict]) -> tuple[dict, object]:
+    """A minimal fake Swiggy backend: get_cart returns whatever the last
+    update_cart actually wrote, so a post-write read-back genuinely
+    reflects the write -- the same way the real server would."""
+    state = {"items": list(initial_items)}
 
     async def fake_call(*, url, bearer_token, tool_name, arguments):
-        calls.append((tool_name, arguments))
         if tool_name == "get_cart":
-            return {"cartTotalAmount": "0", "items": [], "cartAbsent": True}
-        return {"cartTotalAmount": "108", "items": arguments["items"]}
+            return {"cartTotalAmount": "0", "items": list(state["items"])}
+        state["items"] = list(arguments["items"])
+        return {"written": arguments}
 
-    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
+    return state, fake_call
+
+
+async def test_adding_to_an_empty_cart_writes_only_the_new_item():
+    _, fake_call = _stateful_server([])
+    calls = []
+
+    async def tracking_call(*, url, bearer_token, tool_name, arguments):
+        calls.append((tool_name, arguments))
+        return await fake_call(url=url, bearer_token=bearer_token, tool_name=tool_name, arguments=arguments)
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=tracking_call):
         result = await add_to_instamart_cart(
             bearer_token="tok", address_id="addr1", spin_id="SPIN1", quantity=1,
         )
@@ -32,45 +48,47 @@ async def test_adding_to_an_empty_cart_writes_only_the_new_item():
         "update_cart",
         {"selectedAddressId": "addr1", "items": [{"spinId": "SPIN1", "quantity": 1}]},
     )
+    assert calls[2] == ("get_cart", {})
     assert result["preserved_existing_items"] == 0
 
 
 async def test_adding_to_a_populated_cart_preserves_the_existing_items():
     """The core safety property: update_cart REPLACES the cart, so a naive
     single-item write would silently delete whatever else was in it."""
-    async def fake_call(*, url, bearer_token, tool_name, arguments):
-        if tool_name == "get_cart":
-            return {
-                "cartTotalAmount": "150",
-                "items": [
-                    {"spinId": "EXISTING1", "quantity": 2, "displayName": "Bread"},
-                    {"spinId": "EXISTING2", "quantity": 1, "displayName": "Eggs"},
-                ],
-            }
-        return {"written": arguments}
+    _, fake_call = _stateful_server([
+        {"spinId": "EXISTING1", "quantity": 2, "displayName": "Bread"},
+        {"spinId": "EXISTING2", "quantity": 1, "displayName": "Eggs"},
+    ])
+    calls = []
 
-    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call) as mock:
+    async def tracking_call(*, url, bearer_token, tool_name, arguments):
+        calls.append((tool_name, arguments))
+        return await fake_call(url=url, bearer_token=bearer_token, tool_name=tool_name, arguments=arguments)
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=tracking_call):
         result = await add_to_instamart_cart(
             bearer_token="tok", address_id="addr1", spin_id="NEWSPIN", quantity=3,
         )
 
-    write_call = mock.call_args_list[1]
-    written_items = write_call.kwargs["arguments"]["items"]
+    write_call = calls[1]
+    written_items = write_call[1]["items"]
     spin_ids = {item["spinId"] for item in written_items}
     assert spin_ids == {"EXISTING1", "EXISTING2", "NEWSPIN"}
     assert result["preserved_existing_items"] == 2
 
 
 async def test_adding_the_same_item_again_updates_quantity_not_duplicates_the_line():
-    async def fake_call(*, url, bearer_token, tool_name, arguments):
-        if tool_name == "get_cart":
-            return {"items": [{"spinId": "SPIN1", "quantity": 1}]}
-        return {"written": arguments}
+    _, fake_call = _stateful_server([{"spinId": "SPIN1", "quantity": 1}])
+    calls = []
 
-    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call) as mock:
+    async def tracking_call(*, url, bearer_token, tool_name, arguments):
+        calls.append((tool_name, arguments))
+        return await fake_call(url=url, bearer_token=bearer_token, tool_name=tool_name, arguments=arguments)
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=tracking_call):
         await add_to_instamart_cart(bearer_token="tok", address_id="a1", spin_id="SPIN1", quantity=5)
 
-    written_items = mock.call_args_list[1].kwargs["arguments"]["items"]
+    written_items = calls[1][1]["items"]
     assert written_items == [{"spinId": "SPIN1", "quantity": 5}]
 
 
@@ -95,13 +113,20 @@ async def test_an_unserviceable_cart_address_is_treated_as_empty_not_blocked_for
     unserviceable address holds nothing deliverable to the new address
     either way, so this specific failure is treated as "nothing to
     preserve" and the write proceeds — honestly flagged via
-    cart_read_skipped_reason, not silently claimed as a normal empty cart."""
+    cart_read_skipped_reason, not silently claimed as a normal empty cart.
+    Once update_cart re-anchors the cart to the newly picked, serviceable
+    address, the post-write read-back succeeds normally."""
+    calls = {"get_cart": 0}
+
     async def fake_call(*, url, bearer_token, tool_name, arguments):
         if tool_name == "get_cart":
-            raise DirectMcpCallError(
-                "get_cart returned an error: The selected address is not "
-                "serviceable at the moment. Please choose a different delivery address."
-            )
+            calls["get_cart"] += 1
+            if calls["get_cart"] == 1:
+                raise DirectMcpCallError(
+                    "get_cart returned an error: The selected address is not "
+                    "serviceable at the moment. Please choose a different delivery address."
+                )
+            return {"items": [{"spinId": "NEW", "quantity": 1}]}
         return {"written": arguments}
 
     with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call) as mock:
@@ -109,7 +134,7 @@ async def test_an_unserviceable_cart_address_is_treated_as_empty_not_blocked_for
             bearer_token="tok", address_id="work-addr", spin_id="NEW", quantity=1,
         )
 
-    write_call = mock.call_args_list[-1]
+    write_call = mock.call_args_list[1]
     assert write_call.kwargs["arguments"] == {
         "selectedAddressId": "work-addr", "items": [{"spinId": "NEW", "quantity": 1}],
     }
@@ -119,10 +144,7 @@ async def test_an_unserviceable_cart_address_is_treated_as_empty_not_blocked_for
 
 
 async def test_a_normal_successful_read_never_sets_the_skipped_reason():
-    async def fake_call(*, url, bearer_token, tool_name, arguments):
-        if tool_name == "get_cart":
-            return {"items": []}
-        return {"written": arguments}
+    _, fake_call = _stateful_server([])
 
     with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
         result = await add_to_instamart_cart(
@@ -148,13 +170,18 @@ async def test_a_missing_or_malformed_existing_item_is_skipped_not_guessed():
     from the merge by inventing a value for it -- it is simply excluded,
     which is safer than guessing wrong and either losing or duplicating a
     real item."""
+    calls = {"get_cart": 0}
+
     async def fake_call(*, url, bearer_token, tool_name, arguments):
         if tool_name == "get_cart":
-            return {"items": [
-                {"spinId": "GOOD", "quantity": 1},
-                {"spinId": None, "quantity": 2},
-                {"spinId": "NOQTY"},
-            ]}
+            calls["get_cart"] += 1
+            if calls["get_cart"] == 1:
+                return {"items": [
+                    {"spinId": "GOOD", "quantity": 1},
+                    {"spinId": None, "quantity": 2},
+                    {"spinId": "NOQTY"},
+                ]}
+            return {"items": [{"spinId": "GOOD", "quantity": 1}, {"spinId": "NEW", "quantity": 1}]}
         return {"written": arguments}
 
     with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call) as mock:
@@ -163,3 +190,52 @@ async def test_a_missing_or_malformed_existing_item_is_skipped_not_guessed():
     written_items = mock.call_args_list[1].kwargs["arguments"]["items"]
     spin_ids = {item["spinId"] for item in written_items}
     assert spin_ids == {"GOOD", "NEW"}
+
+
+async def test_update_cart_reporting_no_error_but_the_item_never_landing_fails_closed():
+    """Real, reproduced incident (2026-09-04, see this module's docstring):
+    update_cart returned no error, the UI said "CART UPDATED", and the real
+    Swiggy site showed nothing added. update_cart's own reply is not proof
+    of anything -- only an independent read-back is. Here the read-back
+    never shows the item, so this must fail loudly instead of lying."""
+    async def fake_call(*, url, bearer_token, tool_name, arguments):
+        if tool_name == "get_cart":
+            return {"items": []}  # never actually reflects the write
+        return {"written": arguments}  # update_cart itself claims success
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
+        with pytest.raises(SwiggyCartError, match="not actually in the real cart"):
+            await add_to_instamart_cart(bearer_token="tok", address_id="a1", spin_id="S1", quantity=1)
+
+
+async def test_the_read_back_confirmation_call_itself_failing_fails_closed():
+    """A write that can't even be confirmed is not a success -- this must
+    not be conflated with the pre-write "unserviceable, treat as empty"
+    allowance, which only ever applies before anything has been written."""
+    calls = {"get_cart": 0}
+
+    async def fake_call(*, url, bearer_token, tool_name, arguments):
+        if tool_name == "get_cart":
+            calls["get_cart"] += 1
+            if calls["get_cart"] == 1:
+                return {"items": []}
+            raise DirectMcpCallError("connection reset")
+        return {"written": arguments}
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
+        with pytest.raises(SwiggyCartError, match="could not be.*read back"):
+            await add_to_instamart_cart(bearer_token="tok", address_id="a1", spin_id="S1", quantity=1)
+
+
+async def test_a_quantity_mismatch_on_read_back_also_fails_closed():
+    """Confirms the read-back checks quantity, not just presence -- Swiggy
+    silently capping quantity (stock limits, MOV rules, etc.) must not be
+    reported as the exact write the user approved."""
+    async def fake_call(*, url, bearer_token, tool_name, arguments):
+        if tool_name == "get_cart":
+            return {"items": [{"spinId": "S1", "quantity": 1}]}  # asked for 5, only 1 landed
+        return {"written": arguments}
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
+        with pytest.raises(SwiggyCartError, match="not actually in the real cart"):
+            await add_to_instamart_cart(bearer_token="tok", address_id="a1", spin_id="S1", quantity=5)

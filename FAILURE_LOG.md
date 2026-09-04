@@ -3024,3 +3024,70 @@ Direct — the specific example (onion vs onion paste) was the user's own
 real search, not a constructed test case, and this generalizes to every
 Mission-flow commerce search across every connector, not just this one
 query.
+
+# F-048 — "CART UPDATED" was shown for a Swiggy write that never actually landed
+
+## Failure
+Live end-to-end test: searched a real Instamart item, approved it, the UI
+showed "✓ CART UPDATED — 1 ITEM(S)", and clicking through to the real
+Swiggy Instamart site showed the cart unchanged — the item was never
+actually there. Unlike F-036 (which failed loudly, with `update_cart`
+itself rejecting the write), this time `update_cart` returned no error at
+all, so OrderGuard reported success it had no real evidence for.
+
+## Cause
+`swiggy_cart.py::add_to_instamart_cart` treated `update_cart` returning
+without an `is_error` as proof the write happened, and returned
+`items_written` computed from what was *asked for*, not from anything
+Swiggy actually confirmed. `commerce/shopify_mcp.py` already documents the
+correct discipline for this exact class of write — `read_cart`'s own
+docstring: "Deliberately a separate round trip from `add_to_cart`. Reusing
+the reply from the write would only tell us what we asked for; this tells
+us what the store did." — and `app.py`'s FreshCart checkout path already
+follows it (`written = await adapter.add_to_cart(...)` immediately
+followed by an independent `observed = await adapter.read_cart(...)`).
+Swiggy's cart-write path never had this second, independent read — it
+read the cart once, before writing, purely to merge and preserve existing
+items, and never again.
+
+Most likely root trigger for *why* the write silently no-opped rather than
+erroring: the address picked in `OfferApproval.tsx`'s address picker at
+approval time is not tied to whatever delivery address the real
+`search_products` call actually used during the conversation (this is the
+same root cause F-036 already identified and left as "not yet made" —
+still true, still open). This entry fixes the dishonest-success symptom
+regardless of the underlying cause; F-036's discoverability gap (thread
+the search's own address through to the picker) is still real, separate,
+follow-up work.
+
+## Fix
+`add_to_instamart_cart` now makes a second, independent `get_cart` call
+after `update_cart` succeeds, and requires the exact `spinId` + `quantity`
+approved to actually appear in that real read-back before returning
+success. Any mismatch (item absent, wrong quantity — e.g. Swiggy silently
+capping at a stock or MOV limit) or a failure of the confirmation call
+itself now raises `SwiggyCartError`, which `app.py::approve_cart_action`
+already surfaces as a 502 and `OfferApproval.tsx` already renders as
+"HALTED BEFORE WRITING ANYTHING" — no new UI code needed, since that path
+already existed for every other real cart-write failure.
+
+## Regression test
+`tests/test_swiggy_cart.py`: `test_update_cart_reporting_no_error_but_the_item_never_landing_fails_closed`
+reproduces the exact reported symptom (write claims success, read-back
+never shows the item) and asserts it now fails closed; two more cover the
+confirmation call itself failing, and a quantity mismatch on read-back.
+Every existing test in the file was updated to a stateful fake Swiggy
+backend, since a non-stateful one now fails these tests for the right
+reason (the mock cart never reflected the write) rather than the wrong one.
+
+## Lesson
+A tool call returning without an error is a claim, not evidence — this
+project already knows that everywhere else on the money path (Shopify's
+own `read_cart`, `checkout_guard.py`'s re-read before payment), and one
+cart-write function quietly staying an exception to that rule was enough
+to show a real user a false "success" on a real purchase flow.
+
+## Production relevance
+Direct and severe: this is the exact "Find → Verify → Pay → Prove" thesis
+applied to its own R1 write — a write this project reported as done, that
+a real user, on the real Swiggy site, could see was not.
