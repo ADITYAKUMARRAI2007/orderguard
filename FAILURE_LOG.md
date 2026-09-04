@@ -3091,3 +3091,58 @@ to show a real user a false "success" on a real purchase flow.
 Direct and severe: this is the exact "Find → Verify → Pay → Prove" thesis
 applied to its own R1 write — a write this project reported as done, that
 a real user, on the real Swiggy site, could see was not.
+
+## Addendum — the read-back caught it, and revealed the write is destructive
+
+With the read-back deployed, the next real run (four approvals in one
+mission: onion, potato, chilli powder, apple) produced a decisive result:
+onion and apple were **confirmed present** by the read-back, potato and
+chilli **failed closed** with the new error. The real Swiggy cart, opened
+straight afterwards, contained neither onion nor apple — only the free
+gift and a milk from an earlier session.
+
+That combination rules out the theory this entry originally leaned on. The
+counts prove OrderGuard and the browser are looking at the **same cart**:
+the onion write reported "2 existing preserved" (= the free gift + milk,
+exactly what the site shows) and the apple write reported "3 existing
+preserved" (= those two + onion). Not a different account, not a different
+address, not a stale session.
+
+So the items really did land, and were really gone later. What removed
+them is the failed writes in between. F-036 already captured Swiggy's own
+words for this, and its significance was missed at the time: *"Your cart
+could not be updated — no valid items remained, so the cart is now
+empty."* A write carrying one unsellable `spinId` does not drop just that
+item — **it empties the cart**, destroying the items the merge was
+carefully preserving. Onion was collateral damage from the potato attempt.
+
+Two gaps fixed here. First, `add_to_instamart_cart` verified only that the
+*new* item landed and never checked that the preserved items survived — so
+the destructive case could still be reported as a clean success (the apple
+write did exactly that). It now diffs the pre-write items against the
+read-back and fails with an explicit count of what the write destroyed.
+Second, `update_cart`'s own reply was being **discarded entirely**, never
+even bound to a variable — the very field F-036 proves carries Swiggy's
+explanation of what it did. It is now captured and logged, with the
+before/sent/reply/after shapes, on failure paths only (F-017 discipline:
+ids and quantities to stderr for an operator, generic message to the user).
+
+The still-open root cause of *why* a spinId is unsellable remains F-036's:
+the address the offers were searched against is not the address the write
+uses. That is real, separate, and still unfixed — but it can no longer
+silently eat a cart on the way through.
+
+## Regression test (addendum)
+`tests/test_swiggy_cart.py`: a failed write that empties the cart reports
+what it destroyed rather than only "nothing was added"; and the nastier
+half — the new item lands while everything previously in the cart is wiped
+— fails instead of passing the naive "is my item there?" check.
+
+## Lesson (addendum)
+The first fix was right and still incomplete: verifying the thing you
+added is not the same as verifying the cart. A write that REPLACES state
+has to be checked against everything it was supposed to preserve, not just
+the one line the user was looking at. And a reply that gets discarded
+without being read is not "no evidence" — it is evidence thrown away; the
+sentence that explained this whole failure had been sitting in an unread
+response body since F-036.

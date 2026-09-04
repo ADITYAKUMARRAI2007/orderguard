@@ -227,6 +227,52 @@ async def test_the_read_back_confirmation_call_itself_failing_fails_closed():
             await add_to_instamart_cart(bearer_token="tok", address_id="a1", spin_id="S1", quantity=1)
 
 
+async def test_a_write_that_wipes_previously_added_items_is_reported_not_hidden():
+    """Real, reproduced live (2026-09-04): approving onion succeeded and was
+    confirmed present; approving potato afterwards failed, and the onion was
+    gone from the real cart too. Swiggy's own reply to a write containing an
+    unsellable item (captured in F-036) is "no valid items remained, so the
+    cart is now empty" -- it destroys the items the write was supposed to be
+    preserving. A user must be told that, not left to find it on the
+    merchant's own site."""
+    calls = {"get_cart": 0}
+
+    async def fake_call(*, url, bearer_token, tool_name, arguments):
+        if tool_name == "get_cart":
+            calls["get_cart"] += 1
+            if calls["get_cart"] == 1:
+                return {"items": [{"spinId": "ONION", "quantity": 1}]}
+            return {"items": []}  # Swiggy emptied the whole cart
+        return {"message": "no valid items remained, so the cart is now empty"}
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
+        with pytest.raises(SwiggyCartError, match="already in your cart"):
+            await add_to_instamart_cart(
+                bearer_token="tok", address_id="a1", spin_id="POTATO", quantity=1,
+            )
+
+
+async def test_an_item_landing_but_the_rest_of_the_cart_being_wiped_still_fails():
+    """The nastier half: the new item IS there, so the naive check passes,
+    but everything that was in the cart before is gone. Reporting this as a
+    clean success would be exactly the false confidence F-048 fixed."""
+    calls = {"get_cart": 0}
+
+    async def fake_call(*, url, bearer_token, tool_name, arguments):
+        if tool_name == "get_cart":
+            calls["get_cart"] += 1
+            if calls["get_cart"] == 1:
+                return {"items": [{"spinId": "MILK", "quantity": 1}, {"spinId": "ONION", "quantity": 1}]}
+            return {"items": [{"spinId": "APPLE", "quantity": 1}]}  # only the new one survived
+        return {"written": arguments}
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
+        with pytest.raises(SwiggyCartError, match="removed 2 item"):
+            await add_to_instamart_cart(
+                bearer_token="tok", address_id="a1", spin_id="APPLE", quantity=1,
+            )
+
+
 async def test_a_quantity_mismatch_on_read_back_also_fails_closed():
     """Confirms the read-back checks quantity, not just presence -- Swiggy
     silently capping quantity (stock limits, MOV rules, etc.) must not be

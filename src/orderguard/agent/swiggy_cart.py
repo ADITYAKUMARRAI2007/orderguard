@@ -43,6 +43,7 @@ unverified claim on this path.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 
 from .mcp_direct_client import DirectMcpCallError, call_tool_directly
@@ -65,6 +66,40 @@ class SwiggyCartError(RuntimeError):
 class CartItem:
     spin_id: str
     quantity: int
+
+
+def _cart_shape(cart: dict | None) -> object:
+    """Item ids and quantities only — never the whole payload. Swiggy's cart
+    carries names, images and promo prose; the only thing worth an operator's
+    attention here is which ids/quantities were really there."""
+    if cart is None:
+        return None
+    items = cart.get("items")
+    if not isinstance(items, list):
+        return f"<no items list; keys={sorted(cart)}>"
+    return [(item.get("spinId"), item.get("quantity")) for item in items]
+
+
+def _log_write_evidence(
+    before: dict | None, sent: dict, reply: dict | None, after: dict | None,
+) -> None:
+    """Operator-only, stderr, on failure paths only — same F-017 discipline
+    as the normalizer's diagnostics: the user-facing error stays generic,
+    while the real shapes needed to diagnose it are not thrown away.
+
+    ``reply`` in particular was previously discarded entirely. F-036 proved
+    it carries Swiggy's own explanation of what it did to the cart ("no valid
+    items remained, so the cart is now empty") — evidence that was sitting
+    on the wire, unread, while the failure it explains stayed a mystery.
+    """
+    print(
+        "[swiggy_cart] cart write did not verify:\n"
+        f"  before  = {_cart_shape(before)}\n"
+        f"  sent    = {sent.get('items')} to address {sent.get('selectedAddressId')!r}\n"
+        f"  reply   = {reply!r}\n"
+        f"  after   = {_cart_shape(after)}",
+        file=sys.stderr, flush=True,
+    )
 
 
 async def add_to_instamart_cart(
@@ -102,13 +137,14 @@ async def add_to_instamart_cart(
 
     merged = [*existing, CartItem(spin_id=spin_id, quantity=quantity)]
 
+    write_arguments = {
+        "selectedAddressId": address_id,
+        "items": [{"spinId": item.spin_id, "quantity": item.quantity} for item in merged],
+    }
     try:
-        await call_tool_directly(
+        write_reply = await call_tool_directly(
             url=_URL, bearer_token=bearer_token, tool_name="update_cart",
-            arguments={
-                "selectedAddressId": address_id,
-                "items": [{"spinId": item.spin_id, "quantity": item.quantity} for item in merged],
-            },
+            arguments=write_arguments,
         )
     except DirectMcpCallError as exc:
         raise SwiggyCartError(f"cart write failed: {exc}") from exc
@@ -121,6 +157,7 @@ async def add_to_instamart_cart(
             url=_URL, bearer_token=bearer_token, tool_name="get_cart", arguments={},
         )
     except DirectMcpCallError as exc:
+        _log_write_evidence(current, write_arguments, write_reply, None)
         raise SwiggyCartError(
             f"update_cart returned no error, but the real cart could not be "
             f"read back to confirm it: {exc}"
@@ -131,10 +168,38 @@ async def add_to_instamart_cart(
         item.get("spinId") == spin_id and item.get("quantity") == quantity
         for item in confirmed_items
     )
+
+    # A write that fails does not politely leave the rest of the cart alone.
+    # Swiggy's own reply to a write containing one unsellable item, captured
+    # live in F-036, is "no valid items remained, so the cart is now empty" —
+    # it drops the invalid item AND everything that was already there. Items
+    # this write was supposed to be PRESERVING can therefore be destroyed by
+    # it, silently, which is exactly what a user sees as "the things I added
+    # earlier disappeared." Checked explicitly, and reported, rather than
+    # left for the user to discover on the merchant's own site.
+    confirmed_spins = {item.get("spinId") for item in confirmed_items}
+    lost = [item.spin_id for item in existing if item.spin_id not in confirmed_spins]
+
+    if not landed or lost:
+        _log_write_evidence(current, write_arguments, write_reply, confirmed)
     if not landed:
+        detail = (
+            f" It also removed {len(lost)} item(s) that were already in your "
+            "cart before this attempt — Swiggy empties the whole cart when it "
+            "rejects a write, so re-add them."
+            if lost else ""
+        )
         raise SwiggyCartError(
             "update_cart returned no error, but the item is not actually in "
-            "the real cart when read back independently -- nothing was added"
+            "the real cart when read back independently -- nothing was added."
+            + detail
+        )
+    if lost:
+        raise SwiggyCartError(
+            f"the item was added, but the write removed {len(lost)} item(s) "
+            "that were already in your cart — Swiggy rebuilt the cart around "
+            "this write instead of merging into it, so the cart no longer "
+            "matches what you approved"
         )
 
     return {
