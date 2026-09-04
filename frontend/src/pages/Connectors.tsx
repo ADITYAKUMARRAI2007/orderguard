@@ -234,7 +234,13 @@ export function Connectors() {
                     </Badge>
                   )}
                 </div>
-                {c.auth === "connector_account" && c.status !== "CONNECTED" && (
+                {/* Also offered when the STATIC status still says
+                    CONNECTED but the real, verified MCP handshake is
+                    failing — otherwise a user who needs to reconnect has
+                    no button to do it with, since `status` alone never
+                    reflects a live failure (see FAILURE_LOG.md F-044's
+                    fourth addendum). */}
+                {c.auth === "connector_account" && (c.status !== "CONNECTED" || c.mcp_verified_status === "failed") && (
                   MANUAL_TOKEN_CONNECTORS.has(c.id) ? (
                     <div className="flex gap-2 mt-1">
                       <Input
@@ -249,7 +255,7 @@ export function Connectors() {
                     </div>
                   ) : (
                     <button onClick={() => connectOAuth(c.id)} className="self-start px-3 py-1.5 rounded-full text-xs font-medium bg-primary text-primary-foreground">
-                      Connect
+                      {c.status === "CONNECTED" ? "Reconnect" : "Connect"}
                     </button>
                   )
                 )}
