@@ -41,6 +41,15 @@ class CommerceResult(_Payload):
     result_type: Literal["commerce_candidates"] = "commerce_candidates"
     merchant: str
     offers: list[ScoredOffer]
+    # The real delivery address these offers were actually found for, when
+    # the connector's search is address-scoped (Swiggy Instamart is: its
+    # own tool description requires calling get_addresses first, and the
+    # spinIds it returns belong to the dark store serving THAT address).
+    # Carried so approval can write to the same address the search used,
+    # instead of offering every saved address as if all were equally valid
+    # — see F-036/F-048 for what that costs. ``None`` for connectors with
+    # no address concept (Shopify), which changes nothing for them.
+    address_id: str | None = None
 
 
 class DevTaskResult(_Payload):

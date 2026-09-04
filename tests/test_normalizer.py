@@ -167,6 +167,60 @@ def test_a_plain_search_ranks_the_exact_match_above_a_derivative_product():
     assert offers[0].offer.variant_id == "V-ONION"
 
 
+def _one_instamart_product() -> dict:
+    return {
+        "products": [{
+            "displayName": "Onion", "inStock": True, "isAvail": True,
+            "productId": "P-ONION",
+            "variations": [{
+                "spinId": "V-ONION", "skuId": "SKU-ONION", "displayName": "Onion",
+                "price": {"offerPrice": 45}, "isInStockAndAvailable": True,
+            }],
+        }],
+    }
+
+
+def test_the_address_the_search_really_used_is_carried_to_approval():
+    """F-036/F-048's root cause: the offers a Swiggy search returns only
+    exist in the store serving ONE address, but approval used to offer
+    every saved address as equally valid. Picking a different one makes
+    every spinId unsellable, and Swiggy's response to that is to empty the
+    whole cart. The address is read off the real tool call, so approval can
+    write to exactly where the offers came from."""
+    call = ToolCallEvent(
+        connector_id="swiggy-instamart", tool_name="search_products",
+        arguments={"query": "onion", "addressId": "WORK-BLR"},
+        result=_one_instamart_product(),
+    )
+    result = normalize(call, capability="COMMERCE_GROCERY", risk_tier="R0", provenance="stub")
+    assert result.payload.address_id == "WORK-BLR"
+
+
+def test_a_differently_spelled_address_argument_is_still_found():
+    """Matched by shape, not by one hard-coded key name -- this repo has
+    never captured search_products' exact argument spelling from a live
+    schema, and inventing one would be a guess. snake_case must work as
+    well as camelCase."""
+    call = ToolCallEvent(
+        connector_id="swiggy-instamart", tool_name="search_products",
+        arguments={"query": "onion", "selected_address_id": "WORK-BLR"},
+        result=_one_instamart_product(),
+    )
+    result = normalize(call, capability="COMMERCE_GROCERY", risk_tier="R0", provenance="stub")
+    assert result.payload.address_id == "WORK-BLR"
+
+
+def test_no_address_argument_leaves_it_unset_rather_than_guessing():
+    """If Swiggy sends nothing address-shaped, approval falls back to the
+    old picker -- behaviour is unchanged, never a fabricated address."""
+    call = ToolCallEvent(
+        connector_id="swiggy-instamart", tool_name="search_products",
+        arguments={"query": "onion"}, result=_one_instamart_product(),
+    )
+    result = normalize(call, capability="COMMERCE_GROCERY", risk_tier="R0", provenance="stub")
+    assert result.payload.address_id is None
+
+
 def test_shopify_search_ranks_by_relevance_using_the_nested_catalog_query():
     call = ToolCallEvent(
         connector_id="shopify", tool_name="search_catalog",

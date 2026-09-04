@@ -321,7 +321,10 @@ class SwiggyNormalizer:
                     image=variation.imageUrl,
                 )
                 offers.append(_scored(offer, budget_minor=budget_minor, query=query))
-        return CommerceResult(merchant=call.connector_id, offers=rank(offers))
+        return CommerceResult(
+            merchant=call.connector_id, offers=rank(offers),
+            address_id=_address_id_from_call(call),
+        )
 
     def _normalize_food_menu(
         self, call: ToolCallEvent, *, budget_minor: int | None,
@@ -498,6 +501,29 @@ def _validation_error(call: ToolCallEvent, exc: ValidationError) -> ConnectorPay
         call.connector_id, call.tool_name,
         f"payload did not match fixture at {location}: {first.get('msg', 'invalid')}",
     )
+
+
+def _address_id_from_call(call: ToolCallEvent) -> str | None:
+    """The real delivery address this search was actually scoped to, read
+    off the arguments the runtime genuinely sent — never guessed, and never
+    inferred from the user's prose.
+
+    Deliberately matched by shape (any argument whose name mentions an
+    address and whose value is a non-empty string) rather than by one
+    hard-coded key name. Swiggy's ``search_products`` schema requires an
+    address argument — its own tool description refuses to run without one
+    ("You MUST call get_addresses first... NEVER guess, invent, or use
+    placeholder values") — but this repo has never captured that
+    argument's exact spelling from a live schema, and inventing one would
+    be precisely the guess this project forbids. Matching on shape is
+    correct whether the real key is ``addressId``, ``address_id`` or
+    ``selectedAddressId``, and returns ``None`` — restoring the previous
+    behaviour exactly — if none of them is what Swiggy actually sends.
+    """
+    for name, value in (call.arguments or {}).items():
+        if "address" in name.lower() and isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _search_query_from_call(call: ToolCallEvent) -> str:

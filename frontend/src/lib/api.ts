@@ -95,7 +95,15 @@ export interface CouncilResult {
 }
 
 export type ConnectorResultPayload =
-  | { result_type: "commerce_candidates"; merchant: string; offers: ScoredOffer[] }
+  | {
+      result_type: "commerce_candidates";
+      merchant: string;
+      offers: ScoredOffer[];
+      // The real delivery address this search was scoped to, when the
+      // connector's catalogue is address-specific (Swiggy Instamart).
+      // null for connectors with no address concept (Shopify).
+      address_id: string | null;
+    }
   | { result_type: "dev_task"; source: string; items: any[] }
   | { result_type: "calendar"; events: any[] }
   | { result_type: "email"; messages: any[] }

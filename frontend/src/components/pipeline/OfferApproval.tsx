@@ -54,6 +54,7 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
   if (result.payload.result_type !== "commerce_candidates") return null;
   const offers = result.payload.offers;
   if (!offers.length) return null;
+  const searchAddressId = result.payload.address_id;
 
   const recommendedKey = council?.recommended_id ?? null;
 
@@ -69,6 +70,17 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
   async function startApproval(offer: ScoredOffer) {
     setState({ phase: "proposing", offer });
     try {
+      // These offers came from a search scoped to ONE real delivery
+      // address, and the variant ids in them only exist in the store
+      // serving it. Asking which address to deliver to, as if any saved
+      // address were equally valid, is how F-036/F-048 happened: picking a
+      // different one makes every id unsellable, and Swiggy's answer to
+      // that is to empty the whole cart. When the search told us which
+      // address it used, that is the address — there is nothing to ask.
+      if (searchAddressId) {
+        await proposeAndApprove(offer, searchAddressId);
+        return;
+      }
       const addrs = await api.connectorAddresses(connectorId);
       if (addrs.addresses.length === 1) {
         await proposeAndApprove(offer, addrs.addresses[0].id);
