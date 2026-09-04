@@ -2890,3 +2890,72 @@ Direct and severe — this was a real, user-facing outage (confirmed via
 make the product MORE trustworthy. The `lock_timeout` fix generalizes to
 every future migration this project ever adds to an already-live table,
 not just these two.
+
+# F-046 — Swiggy's own OAuth server refuses this deployment's client entirely; reconnecting through the app was never actually possible
+
+## Failure
+Following F-044's own advice ("reconnect Swiggy Instamart to fix this"),
+the user clicked the real Reconnect button this session added. Swiggy's
+own login page answered, not with a login form, but with: "Oops,
+Onrender isn't whitelisted yet — This client isn't supported for Swiggy
+MCP sign-in yet... You can request whitelisting by creating an issue on
+our GitHub repo."
+
+## Cause
+Swiggy's MCP OAuth server only accepts an authorization request from a
+pre-approved allowlist of client origins. This deployment's backend,
+hosted on Render (`*.onrender.com`), is not on that list — and, per an
+existing note already in `connectors.py`, neither is `localhost`. The
+`docs/CONNECTORS.md` claim this whole project's Swiggy integration was
+built against — "Live-proven via a Claude Code session" — is the reason
+a working token ever existed at all: it was obtained through Claude
+Code's own local MCP session on the user's machine, a client Swiggy DOES
+allow, then carried into `ConnectorAccount` by a different path than the
+one this app's own "Connect"/"Reconnect" button drives. That original
+path to a valid token was never actually reproducible from inside this
+hosted deployment itself — the button existed, and now correctly
+appears, but Swiggy was always going to refuse what it does the moment
+it's clicked.
+
+## How I proved it
+Did not assume the button's job was done once it was visible and wired
+correctly. Watched the user actually click it and followed where Swiggy's
+own server sent the browser — a real, external, third-party response,
+not something in this codebase to debug further.
+
+## Fix
+None available from this codebase alone — this is Swiggy's access
+control, not a bug. Real options, in order of how much they depend on
+someone else:
+1. Request whitelisting for this deployment's redirect URI via the link
+   Swiggy's own page provides (an external process, timeline not in this
+   project's control).
+2. Re-derive a fresh token the same way the original one was obtained —
+   through a real Claude Code session's own local MCP connection to
+   Swiggy (a whitelisted client) — then find/build a real path to carry
+   that token into this deployment's `ConnectorAccount` store, the same
+   way the first one apparently arrived.
+3. Accept Swiggy Instamart stays unavailable for a real, hosted reconnect
+   until (1) resolves.
+
+## Regression test
+None — this is an external service's access policy, not code behavior
+this project's own test suite can assert on.
+
+## Lesson
+A "Reconnect" button that renders correctly and points at a technically
+valid OAuth URL is not the same claim as "reconnecting is possible" — the
+whole reconnect flow was built and verified against the SHAPE of a real
+OAuth handshake (PKCE, redirect, token exchange — all real, all tested)
+without ever confirming Swiggy's own server would actually let THIS
+deployment's client complete one. The gap wasn't in what this code does;
+it was in an assumption about what the other end of the handshake would
+allow, never directly checked until the real user actually tried it.
+
+## Production relevance
+Direct and load-bearing for this entire buildathon submission's Swiggy
+story: real, live Swiggy Instamart access currently depends on a token
+obtained outside this hosted deployment's own control, through a channel
+(a local Claude Code session) that cannot be re-triggered from
+production. Worth stating plainly rather than implying the "Reconnect"
+button is a complete, self-service fix.
