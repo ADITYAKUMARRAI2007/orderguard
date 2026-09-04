@@ -2176,6 +2176,30 @@ async def connector_addresses(connector_id: str) -> dict:
     }
 
 
+class SetDefaultAddressRequest(BaseModel):
+    model_config = STRICT
+    address_id: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+
+
+@app.post("/api/agent/connectors/{connector_id}/default-address")
+def set_connector_default_address(connector_id: str, request: SetDefaultAddressRequest) -> dict:
+    """Persist a real saved address (from this connector's own
+    ``get_addresses``, chosen explicitly here — never guessed) as this
+    connector's default delivery address. orchestrator.py states it to the
+    model as a deterministic fact every turn, so an address-scoped search
+    (Swiggy Instamart's own tool requires one — see agent/orchestrator.py's
+    docstring) goes straight there instead of asking every conversation.
+    See FAILURE_LOG.md F-048."""
+    if not ACCOUNTS.is_connected(connector_id):
+        raise HTTPException(status_code=409, detail=f"{connector_id!r} is not connected")
+    ACCOUNTS.set_default_address(connector_id, request.address_id, request.label)
+    append_event(AUDIT, "connector_default_address_set", {
+        "connector_id": connector_id, "address_id": request.address_id, "label": request.label,
+    })
+    return {"connector_id": connector_id, "address_id": request.address_id, "label": request.label}
+
+
 class ProposeCartActionRequest(BaseModel):
     model_config = STRICT
     connector_id: str = Field(min_length=1, max_length=64)

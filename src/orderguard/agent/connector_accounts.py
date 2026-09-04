@@ -88,6 +88,15 @@ class ConnectorAccount(SQLModel, table=True):
     # what lets that page show truth instead of a stale local guess.
     last_mcp_status: str | None = None
     last_mcp_checked_at: datetime | None = None
+    # A real saved address id/label from THIS connector's own get_addresses,
+    # set explicitly by the user (never guessed) -- see FAILURE_LOG.md F-048.
+    # When set, orchestrator.py states it to the model as a deterministic
+    # fact so a fresh search goes straight to it instead of asking "which
+    # address?" every new conversation. Independent of F-048's own fix
+    # (carrying the SEARCH's real address through to approval); this is
+    # what lets the search itself stop asking in the first place.
+    default_address_id: str | None = None
+    default_address_label: str | None = None
 
 
 def accounts_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
@@ -120,6 +129,8 @@ def _migrate_account_columns(engine: Engine) -> None:
         "external_account_ref": "VARCHAR NOT NULL DEFAULT ''",
         "last_mcp_status": "VARCHAR",
         "last_mcp_checked_at": "TIMESTAMP",
+        "default_address_id": "VARCHAR",
+        "default_address_label": "VARCHAR",
     }
     if engine.dialect.name == "sqlite":
         with engine.begin() as connection:
@@ -134,6 +145,8 @@ def _migrate_account_columns(engine: Engine) -> None:
         pg_additions = {
             "last_mcp_status": "VARCHAR",
             "last_mcp_checked_at": "TIMESTAMP",
+            "default_address_id": "VARCHAR",
+            "default_address_label": "VARCHAR",
         }
         with engine.begin() as connection:
             # Real, live-found gap (2026-09-04): Postgres DDL takes an
@@ -276,6 +289,29 @@ class ConnectorAccountStore:
             row.last_mcp_checked_at = _now()
             db.add(row)
             db.commit()
+
+    def set_default_address(self, connector_id: str, address_id: str, label: str) -> None:
+        """Persist the user's own chosen default delivery address for this
+        connector, from a real saved address id (never guessed or invented)
+        -- see FAILURE_LOG.md F-048. Only updates an existing account row,
+        same as ``record_mcp_status``: a connector with no stored token has
+        no delivery context to set a default for."""
+        with Session(self._engine) as db:
+            row = self._select(db, connector_id)
+            if row is None:
+                return
+            row.default_address_id = address_id
+            row.default_address_label = label
+            db.add(row)
+            db.commit()
+
+    def default_address(self, connector_id: str) -> tuple[str | None, str | None]:
+        """``(address_id, label)`` the user set as this connector's default,
+        or ``(None, None)`` if none has been set."""
+        row = self._get(connector_id)
+        if row is None:
+            return None, None
+        return row.default_address_id, row.default_address_label
 
     def mcp_health(self, connector_id: str) -> tuple[str | None, datetime | None]:
         """The last REAL, verified MCP status for this connector and when

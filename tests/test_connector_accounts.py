@@ -171,6 +171,27 @@ def test_recording_mcp_status_for_an_unconnected_connector_does_nothing(store):
     assert store.status("swiggy-instamart") == "AUTH_REQUIRED"
 
 
+def test_default_address_is_unset_until_the_user_sets_one(store):
+    store.store_token("swiggy-instamart", "real-bearer-token", expires_in_seconds=None)
+    assert store.default_address("swiggy-instamart") == (None, None)
+
+
+def test_setting_a_default_address_persists_id_and_label(store):
+    store.store_token("swiggy-instamart", "real-bearer-token", expires_in_seconds=None)
+    store.set_default_address("swiggy-instamart", "WORK-ADDR-ID", "Work")
+    assert store.default_address("swiggy-instamart") == ("WORK-ADDR-ID", "Work")
+
+    store.set_default_address("swiggy-instamart", "HOME-ADDR-ID", "Home")
+    assert store.default_address("swiggy-instamart") == ("HOME-ADDR-ID", "Home")
+
+
+def test_setting_a_default_address_for_an_unconnected_connector_does_nothing(store):
+    """Same discipline as record_mcp_status: no stored token means no
+    account row to correct -- this must never silently create one."""
+    store.set_default_address("swiggy-instamart", "WORK-ADDR-ID", "Work")
+    assert store.default_address("swiggy-instamart") == (None, None)
+
+
 def test_pkce_pair_is_a_valid_s256_challenge():
     import base64
     import hashlib

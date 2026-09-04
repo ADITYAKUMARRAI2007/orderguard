@@ -245,7 +245,7 @@ async def run_agent_turn(
         c.id for c in eligible
         if c.id not in previously_attempted_connector_ids and c.id not in previously_failed_connector_ids
     ]
-    effective_message = message
+    notes: list[str] = []
     if session_context is not None and unverified_ids:
         # Real, live-observed follow-up to F-044 (see FAILURE_LOG.md): a
         # softer, contextual version of this note changed the model's
@@ -256,8 +256,7 @@ async def run_agent_turn(
         # prohibition on the specific failure mode just observed, not
         # background context to weigh.
         ids_text = ", ".join(unverified_ids)
-        effective_message = (
-            f"{message}\n\n"
+        notes.append(
             f"[System instruction, not from the user: you have not called "
             f"{ids_text} with a real tool request anywhere in this "
             "conversation yet. Before you write anything else, call it. "
@@ -268,6 +267,26 @@ async def run_agent_turn(
             "call, say plainly that you have not searched it yet, nothing "
             "more.]"
         )
+
+    # A real, user-set default delivery address (see FAILURE_LOG.md F-048;
+    # ConnectorAccountStore.set_default_address) -- stated as a plain fact
+    # so an address-scoped search (Swiggy Instamart's own tool description
+    # requires one) can go straight there instead of asking every new
+    # conversation. Every turn, not just continuations: a fresh mission has
+    # no earlier answer to fall back on, so this is exactly where asking
+    # would otherwise happen.
+    for connector in eligible:
+        address_id, label = accounts.default_address(connector.id)
+        if address_id:
+            notes.append(
+                f"[System instruction, not from the user: for {connector.id!r}, "
+                f"the user's default delivery address is {label!r} "
+                f"(id={address_id!r}). Use it directly for any search or cart "
+                "action on this connector without asking which address to "
+                "use, unless this message itself names a different address.]"
+            )
+
+    effective_message = message if not notes else f"{message}\n\n" + "\n\n".join(notes)
 
     turn_started = time.monotonic()
     turn = await runtime.run_turn(

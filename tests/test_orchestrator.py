@@ -194,6 +194,38 @@ async def test_a_brand_new_turn_gets_no_note_even_with_unattempted_connectors():
     assert runtime.calls[0][1] == "order milk"
 
 
+async def test_a_default_address_is_stated_to_the_model_even_on_a_brand_new_turn():
+    """A user-set default delivery address (FAILURE_LOG.md F-048;
+    ConnectorAccountStore.set_default_address) must reach the model on the
+    VERY FIRST turn of a conversation, unlike the unverified-connector
+    note above -- a fresh mission has no earlier answer to fall back on,
+    so this is exactly where Swiggy's own address-required search would
+    otherwise make the model ask the user which one to use."""
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    store.set_default_address("swiggy-instamart", "WORK-ADDR-ID", "Work")
+    runtime = StubAgentRuntime()
+    await run_agent_turn(
+        message="order milk", category="COMMERCE_GROCERY", runtime=runtime, accounts=store,
+    )
+    sent_message = runtime.calls[0][1]
+    assert sent_message.startswith("order milk")
+    assert "swiggy-instamart" in sent_message
+    assert "WORK-ADDR-ID" in sent_message
+    assert "Work" in sent_message
+    assert "without asking" in sent_message
+
+
+async def test_no_default_address_set_leaves_the_message_unchanged():
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime()
+    await run_agent_turn(
+        message="order milk", category="COMMERCE_GROCERY", runtime=runtime, accounts=store,
+    )
+    assert runtime.calls[0][1] == "order milk"
+
+
 async def test_attempted_connector_ids_reflects_real_tool_calls_not_all_eligible_ones():
     """Real, live-found gap (2026-09-03, see FAILURE_LOG.md F-041): with
     more than one eligible connector, a turn's own reply text is not
