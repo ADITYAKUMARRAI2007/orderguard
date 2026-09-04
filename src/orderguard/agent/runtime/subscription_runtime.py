@@ -26,6 +26,7 @@ same owner-scoped ConnectorAccount bearer token is used by both runtimes.
 
 from __future__ import annotations
 
+import sys
 import uuid
 from pathlib import Path
 
@@ -230,7 +231,14 @@ class SubscriptionAgentRuntime:
                 # time (not only when resuming) since a *fresh* call still
                 # gets a real session_id, and that is exactly the value the
                 # NEXT call must resume to continue this same conversation.
-                new_session_id = (getattr(message, "data", {}) or {}).get("session_id")
+                init_data = getattr(message, "data", {}) or {}
+                new_session_id = init_data.get("session_id")
+                # Operator-only diagnostic (F-017): the SDK's init message
+                # may report per-MCP-server connection status, which this
+                # code has never captured before -- if a real Swiggy MCP
+                # handshake failure is happening, this is where it would
+                # show up. See FAILURE_LOG.md F-044's live investigation.
+                print(f"[agent] SystemMessage(init) data={init_data!r}", file=sys.stderr)
             if isinstance(message, SystemMessage) and message.subtype == "api_retry":
                 data = getattr(message, "data", {}) or {}
                 if data.get("error_status") == 401 or data.get("error") == "authentication_failed":
