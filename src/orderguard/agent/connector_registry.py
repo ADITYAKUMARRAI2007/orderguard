@@ -51,11 +51,11 @@ class RegisteredConnector:
     health: str = "HEALTHY"
     available: bool = True
     last_verified_at: str | None = None
-    # A real, top-level page on the connector's own site — never a guessed
-    # deep-link to a cart/checkout path we have not confirmed exists. Once
-    # OrderGuard writes to a real cart via this connector's own MCP tool
-    # (never through Razorpay, which only settles for OUR merchant), the
-    # user finishes there themselves.
+    # A real page on the connector's own site — never a guessed deep-link to
+    # a cart/checkout path we have not confirmed exists. Once OrderGuard
+    # writes to a real cart via this connector's own MCP tool (never through
+    # Razorpay, which only settles for OUR merchant), the user finishes
+    # there themselves.
     checkout_url: str = ""
 
 
@@ -84,7 +84,16 @@ REGISTRY: tuple[RegisteredConnector, ...] = (
         provider="Swiggy", vertical="grocery",
         capabilities=("COMMERCE_GROCERY",), regions=("IN",),
         last_verified_at="2026-08-29T00:00:00Z",
-        checkout_url="https://www.swiggy.com/instamart",
+        # Real, confirmed path (2026-09-04, a real user's own browser
+        # screenshot): the generic /instamart homepage forces Swiggy to
+        # re-detect a delivery location from the browser's own signal
+        # (IP/geolocation), which is not the address a real write just used
+        # -- exactly the "sorry, we do not deliver here" a real user hit.
+        # /instamart/cart is the real, already-observed URL rendering the
+        # actual saved cart (with a live "Review Items" panel, item list,
+        # and "View Cart" button) once the account's own selected address
+        # is what the page is using, not a fresh guess.
+        checkout_url="https://www.swiggy.com/instamart/cart",
     ),
     RegisteredConnector(
         id="swiggy-food",

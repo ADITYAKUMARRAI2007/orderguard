@@ -380,7 +380,7 @@ def test_approve_cart_action_executes_the_exact_stored_arguments_not_a_fresh_dec
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "SUCCEEDED"
-    assert body["checkout_url"] == "https://www.swiggy.com/instamart"
+    assert body["checkout_url"] == "https://www.swiggy.com/instamart/cart"
     _args, kwargs = mock_write.call_args
     assert kwargs["spin_id"] == "SPIN-APPROVED"
     assert kwargs["quantity"] == 3
