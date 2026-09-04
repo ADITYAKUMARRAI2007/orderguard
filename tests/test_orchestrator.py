@@ -157,6 +157,28 @@ async def test_a_connector_already_attempted_gets_no_note():
     assert runtime.calls[0][1] == "under 500"
 
 
+async def test_a_connector_with_a_real_verified_failure_gets_no_retry_nudge():
+    """Real, live-found gap (2026-09-04, see FAILURE_LOG.md F-044's
+    addendum): a connector whose MCP handshake genuinely failed in an
+    earlier turn (real evidence from the SDK's own init message, not a
+    model claim) must not keep getting told "you have not called X yet,
+    call it" -- that would just be noise pointed at something already
+    confirmed broken, not a correction of an unverified claim."""
+    store = _store()
+    store.store_token("swiggy-instamart", "our-own-token", expires_in_seconds=None)
+    runtime = StubAgentRuntime()
+    await run_agent_turn(
+        message="under 500", category="COMMERCE_GENERAL", runtime=runtime, accounts=store,
+        session_context={"resume": "sdk-1"}, image_context_established=True,
+        previously_attempted_connector_ids=frozenset(),
+        previously_failed_connector_ids=frozenset({"swiggy-instamart"}),
+    )
+    sent_message = runtime.calls[0][1]
+    assert "swiggy-instamart" not in sent_message
+    # shopify is still genuinely unverified, so it still gets the note.
+    assert "shopify" in sent_message
+
+
 async def test_a_brand_new_turn_gets_no_note_even_with_unattempted_connectors():
     """No `session_context` means no earlier turn in this thread exists to
     have made a stale claim -- nothing here is yet worth correcting, and

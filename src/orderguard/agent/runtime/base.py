@@ -64,6 +64,19 @@ class AgentTurnResult:
     # runtime needs to understand the other's shape — the orchestrator only
     # ever passes back exactly what it was given.
     session_context: dict = field(default_factory=dict)
+    # Real, verified evidence from the runtime's OWN connection layer that a
+    # connector's MCP handshake failed THIS turn -- never a model claim.
+    # Real, live-found gap (2026-09-04, see FAILURE_LOG.md F-044 addendum):
+    # a model correctly reported "Swiggy Instamart's tools never loaded,
+    # real connection failure" and this was dismissed as a hallucination
+    # for multiple fix cycles, because `/api/agent/connectors`'s own
+    # "CONNECTED" status only checks whether a token exists in our
+    # database, not whether the connector's real MCP handshake is
+    # currently succeeding -- the two silently drifted apart. The Claude
+    # Agent SDK's own init message already reports per-server connection
+    # status (`mcp_servers: [{"name": ..., "status": "failed"}]`); this
+    # was captured in a diagnostic print but never surfaced as data before.
+    failed_connector_ids: list[str] = field(default_factory=list)
 
 
 class AgentRuntime(Protocol):

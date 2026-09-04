@@ -127,6 +127,16 @@ export interface MissionStep {
   // had simply never called it. Compare against eligible_connector_ids to
   // show the user, truthfully, what was and wasn't searched this turn.
   attempted_connector_ids: string[];
+  // Real, verified evidence (the Agent SDK's own init message, never a
+  // model claim) that a connector's MCP handshake actually failed this
+  // turn. Real, live-found gap (see FAILURE_LOG.md F-044's addendum): a
+  // model's report that a connector's tools never loaded was dismissed as
+  // a hallucination for multiple fix cycles because nothing surfaced this
+  // signal before — it was telling the truth. Distinct from an entry in
+  // eligible_connector_ids that's simply missing from
+  // attempted_connector_ids (which just means "not searched," not "can't
+  // be searched").
+  failed_connector_ids: string[];
   // 1:1 with the mission's intents — correlates this step to the real
   // agent_intent_parsed audit event app.py actually wrote for it.
   intent_id: string;
@@ -149,6 +159,7 @@ export interface AgentRunResponse {
   budget_minor: number | null;
   eligible_connector_ids: string[];
   attempted_connector_ids: string[];
+  failed_connector_ids: string[];
 }
 
 export type CheckStatus = "success" | "failure" | "pending";

@@ -27,7 +27,7 @@ from ..db import make_engine
 
 __all__ = [
     "conversation_sessions_engine", "save_conversation_session", "load_conversation_session",
-    "was_image_ever_attached", "ever_attempted_connector_ids",
+    "was_image_ever_attached", "ever_attempted_connector_ids", "ever_failed_connector_ids",
 ]
 
 _DEFAULT_PATH = Path("data/conversation_sessions.db")
@@ -70,6 +70,18 @@ class ConversationSessionRecord(SQLModel, table=True):
     # yet in this conversation" -- a claim the model cannot out-reason
     # because it is freshly computed and re-stated every turn.
     attempted_connector_ids_json: str = Field(default="[]")
+    # Sticky, cumulative set of connector ids with a REAL, verified MCP
+    # handshake failure (evidence from the runtime's own init message --
+    # see runtime/base.py::AgentTurnResult.failed_connector_ids, never a
+    # model claim). Real, live-found gap (2026-09-04, see FAILURE_LOG.md
+    # F-044 addendum): a model's report that Swiggy Instamart's tools never
+    # loaded was dismissed as a hallucination for multiple fix cycles
+    # because this real signal was never read before. Kept separate from
+    # attempted_connector_ids so the unverified-connector nudge can stop
+    # asking the model to retry something already confirmed broken by real
+    # evidence, instead of treating "never attempted" and "genuinely
+    # failed" as the same case.
+    failed_connector_ids_json: str = Field(default="[]")
     updated_at: datetime = Field(default_factory=_now)
 
 
@@ -93,6 +105,7 @@ def _migrate_columns(engine: Engine) -> None:
     additions = {
         "image_ever_attached": ("BOOLEAN NOT NULL DEFAULT 0", "BOOLEAN NOT NULL DEFAULT FALSE"),
         "attempted_connector_ids_json": ("VARCHAR NOT NULL DEFAULT '[]'", "VARCHAR NOT NULL DEFAULT '[]'"),
+        "failed_connector_ids_json": ("VARCHAR NOT NULL DEFAULT '[]'", "VARCHAR NOT NULL DEFAULT '[]'"),
     }
     if engine.dialect.name == "sqlite":
         with engine.begin() as connection:
@@ -115,6 +128,7 @@ def save_conversation_session(
     engine: Engine, session_id: str, category: str, session_context: dict, *,
     image_attached: bool = False,
     attempted_connector_ids: list[str] | None = None,
+    failed_connector_ids: list[str] | None = None,
 ) -> None:
     with Session(engine) as db:
         row = db.exec(
@@ -130,6 +144,9 @@ def save_conversation_session(
         if attempted_connector_ids:
             existing_ids = set(json.loads(row.attempted_connector_ids_json or "[]"))
             row.attempted_connector_ids_json = json.dumps(sorted(existing_ids | set(attempted_connector_ids)))
+        if failed_connector_ids:
+            existing_failed = set(json.loads(row.failed_connector_ids_json or "[]"))
+            row.failed_connector_ids_json = json.dumps(sorted(existing_failed | set(failed_connector_ids)))
         row.updated_at = _now()
         db.add(row)
         db.commit()
@@ -170,3 +187,16 @@ def ever_attempted_connector_ids(engine: Engine, session_id: str, category: str)
         if row is None:
             return frozenset()
         return frozenset(json.loads(row.attempted_connector_ids_json or "[]"))
+
+
+def ever_failed_connector_ids(engine: Engine, session_id: str, category: str) -> frozenset[str]:
+    with Session(engine) as db:
+        row = db.exec(
+            select(ConversationSessionRecord).where(
+                ConversationSessionRecord.session_id == session_id,
+                ConversationSessionRecord.category == category,
+            )
+        ).first()
+        if row is None:
+            return frozenset()
+        return frozenset(json.loads(row.failed_connector_ids_json or "[]"))

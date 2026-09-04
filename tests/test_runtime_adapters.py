@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ToolResultBlock, ToolUseBlock, UserMessage
+from claude_agent_sdk import AssistantMessage, SystemMessage, ToolResultBlock, ToolUseBlock, UserMessage
 
 from orderguard.agent.runtime.api_runtime import AnthropicApiRuntime, AnthropicApiRuntimeUnavailable
 from orderguard.agent.runtime.subscription_runtime import (
@@ -167,6 +167,52 @@ def test_subscription_runtime_preserves_actual_mcp_tool_result_for_normalizer():
         provenance="subscription:github",
     )
     assert normalized.payload.items[0]["number"] == 42
+
+
+def test_subscription_runtime_reports_a_real_mcp_handshake_failure():
+    """Real, live-found gap (2026-09-04, see FAILURE_LOG.md F-044's
+    addendum): the SDK's own init message reports per-server MCP
+    connection status (`mcp_servers: [{"name": ..., "status": "failed"}]`)
+    -- this codebase read `session_id` off that same message and discarded
+    everything else, so a genuine connection failure looked identical to
+    the model just not bothering to call a working tool. Model claims
+    about this were dismissed as hallucinations for multiple fix cycles
+    as a direct result."""
+    async def fake_query(*, prompt, options):
+        yield SystemMessage(subtype="init", data={
+            "session_id": "sdk-session-1",
+            "mcp_servers": [{"name": "swiggy-instamart", "status": "failed"}],
+        })
+        return
+        yield  # pragma: no cover
+
+    runtime = SubscriptionAgentRuntime(oauth_token="fake-token", query_fn=fake_query)
+    import asyncio
+    turn = asyncio.run(runtime.run_turn(
+        "sys", "user", [_spec(ToolPermission("search_products", "R0"))],
+    ))
+    # Real evidence surfaces even though the one spec offered this turn was
+    # "github" (from the shared `_spec` helper) -- the SDK's own report
+    # names the server directly; no spec_by_server match just falls back
+    # to the raw server name so nothing is silently dropped.
+    assert turn.failed_connector_ids == ["swiggy-instamart"]
+
+
+def test_subscription_runtime_reports_no_failure_when_the_sdk_reports_none():
+    async def fake_query(*, prompt, options):
+        yield SystemMessage(subtype="init", data={
+            "session_id": "sdk-session-1",
+            "mcp_servers": [{"name": "github", "status": "connected"}],
+        })
+        return
+        yield  # pragma: no cover
+
+    runtime = SubscriptionAgentRuntime(oauth_token="fake-token", query_fn=fake_query)
+    import asyncio
+    turn = asyncio.run(runtime.run_turn(
+        "sys", "user", [_spec(ToolPermission("list_issues", "R0"))],
+    ))
+    assert turn.failed_connector_ids == []
 
 
 def test_subscription_tool_use_without_result_is_never_successful():

@@ -2653,3 +2653,89 @@ not yet been re-verified live at the time of this addendum -- the honest
 status is "changed the model's language once already; the deterministic
 `attempted_connector_ids` field remains the part that does not depend on
 whether this wording works any better than the last one."
+
+## Second addendum -- the model was telling the truth, and F-041/F-044's whole premise was wrong for this case
+
+Re-verifying the stronger instruction wording live surfaced something more
+important than whether it worked: the model refused to obey the injected
+note at all, correctly identifying it as an untrusted instruction embedded
+in user-turn content ("real instructions to me arrive in properly tagged
+system blocks, not embedded inside your chat turn") -- the exact
+prompt-injection defense `prompt.py` itself asks for, now firing against
+this fix's own mechanism. It went on to state, more specifically than
+before: "I have no callable tool for swiggy-instamart at all right now...
+no tools from it were even loaded into my tool list."
+
+That claim was checked against real evidence instead of assumed false.
+The Claude Agent SDK's own `SystemMessage(subtype="init")` reports
+per-server MCP connection status -- `mcp_servers: [{"name":
+"swiggy-instamart", "status": "failed"}]` -- and this codebase had never
+read anything from that message besides `session_id`. **The handshake
+was genuinely, verifiably failing.** The model was not hallucinating a
+cause; it was accurately reporting a real fact this codebase had no way
+to check and was instead judging against a stale, misleading proxy:
+`/api/agent/connectors`'s "CONNECTED" status only checks whether a token
+row exists in the database, never whether the connector's live MCP
+handshake is currently succeeding -- the two had silently drifted apart,
+almost certainly because a real OAuth token expired sometime during this
+session's many hours of live testing.
+
+This means F-041's original finding and every fix cycle since inherited
+a false premise: some fraction of what was treated as "the model
+fabricating a technical failure" was the model correctly reporting a real
+one, just described with an unverifiable specific cause (the SDK's report
+is a bare `status: "failed"`, not an HTTP code -- "expired token" and
+"401" were themselves guesses, just attached to a true underlying fact).
+F-037's original hallucination (fabricated Shopify prices with zero tool
+calls) and F-041's Shopify-only case remain real, separately-verified
+instances of the model answering without evidence — this correction
+narrows what F-044 was solving, it does not erase the other cases.
+
+### Fix
+Stopped guessing and started reading the real signal. `runtime/base.py`'s
+`AgentTurnResult` gained `failed_connector_ids: list[str]`, populated in
+`subscription_runtime.py` from the init message's own `mcp_servers`
+status list (mapped back to a real `connector_id` via the same
+`spec_by_server` lookup already used for tool-call provenance). Threaded
+through `orchestrator.py`'s `MissionStepResult`, both `app.py` response
+builders, and a new sticky `failed_connector_ids_json` column on
+`conversation_sessions.py` (same accumulate-don't-replace pattern as
+`attempted_connector_ids_json`, same dual-dialect migration). The
+unverified-connector nudge now excludes anything in
+`previously_failed_connector_ids` -- telling a model to keep retrying a
+connector already confirmed broken by real evidence is noise, not a
+correction. `PipelineCanvas.tsx` renders a verified MCP failure as its own
+node ("MCP CONNECTION FAILED — VERIFIED BY THE AGENT SDK'S OWN CONNECTION
+REPORT") distinct from the "NOT SEARCHED, don't trust the reply" warning,
+since the two now mean genuinely different things.
+
+### Regression test
+`tests/test_runtime_adapters.py`: a mocked SDK init message reporting a
+failed server produces the right `failed_connector_ids`; a clean init
+message produces none. `tests/test_orchestrator.py`: a connector in
+`previously_failed_connector_ids` gets no retry nudge while a genuinely
+unverified one still does. `tests/test_conversation_sessions.py`: the
+failed set is sticky and tracked separately from the attempted set.
+
+### Lesson
+The most expensive assumption in this whole thread was treating
+"unverifiable" and "false" as the same thing. `/api/agent/connectors`'s
+"CONNECTED" label was never wrong on its own terms (a token row really
+did exist) -- it was answering a different question than the one being
+asked of it, and nothing forced that mismatch into view until the SDK's
+own, already-available signal was finally read instead of discarded.
+Every fix before this one (F-041's ground-truth field, F-044's nudge)
+was still real, correct engineering for the cases that ARE model
+narration outrunning evidence -- but none of them could have found this,
+because they were all built on the same unverified assumption about what
+"CONNECTED" meant. Read the primary signal before building more scaffolding
+around a secondary one.
+
+### Production relevance
+Direct, and reframes the practical fix for the user's original report:
+reconnecting the Swiggy Instamart connector (a fresh OAuth handshake) is
+what actually resolves it, not further prompt or code changes to how the
+model behaves when a connector is unavailable. The new `failed_connector_ids`
+signal is also now the honest way to detect this class of problem going
+forward, in the UI, without relying on a stale token-existence check or
+the model's own account of what happened.

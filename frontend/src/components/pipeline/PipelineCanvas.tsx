@@ -95,10 +95,28 @@ function nodesFor(step: MissionStep): NodeSpec[] {
   const skipped = step.eligible_connector_ids.filter(
     (id) => !step.attempted_connector_ids.includes(id),
   );
-  if (hasConnector && skipped.length > 0) {
+  // Split by whether the skip is EXPLAINED by real evidence. Real,
+  // live-found gap (FAILURE_LOG.md F-044's addendum): a model's report
+  // that a connector's tools never loaded (a genuine MCP handshake
+  // failure, verified via the Agent SDK's own init message) was dismissed
+  // as a hallucination for multiple fix cycles — the two cases need
+  // different framing, not the same "don't trust it" warning: one IS a
+  // verified fact, the other genuinely has no explanation yet.
+  const verifiedFailed = skipped.filter((id) => step.failed_connector_ids.includes(id));
+  const unexplainedSkipped = skipped.filter((id) => !step.failed_connector_ids.includes(id));
+  if (hasConnector && verifiedFailed.length > 0) {
     nodes.push({
       kind: "COVERAGE",
-      value: `NOT SEARCHED: ${skipped.join(", ").toUpperCase()}`,
+      value: `MCP CONNECTION FAILED: ${verifiedFailed.join(", ").toUpperCase()}`,
+      status: "blocked",
+      meta: "VERIFIED BY THE AGENT SDK'S OWN CONNECTION REPORT — RECONNECT THIS CONNECTOR TO SEARCH IT",
+      wide: true,
+    });
+  }
+  if (hasConnector && unexplainedSkipped.length > 0) {
+    nodes.push({
+      kind: "COVERAGE",
+      value: `NOT SEARCHED: ${unexplainedSkipped.join(", ").toUpperCase()}`,
       status: "paused",
       meta: `ACTUALLY SEARCHED: ${step.attempted_connector_ids.join(", ").toUpperCase()} — DON'T TRUST THE REPLY TEXT ALONE`,
       wide: true,

@@ -186,6 +186,7 @@ class SubscriptionAgentRuntime:
         turn_execution_id = uuid.uuid4().hex
         new_session_id: str | None = None
         result_text: str | None = None
+        failed_connector_ids: list[str] = []
 
         def capture_result(block: ToolResultBlock, fallback: object | None = None) -> None:
             call = calls_by_id.get(block.tool_use_id)
@@ -233,12 +234,25 @@ class SubscriptionAgentRuntime:
                 # NEXT call must resume to continue this same conversation.
                 init_data = getattr(message, "data", {}) or {}
                 new_session_id = init_data.get("session_id")
-                # Operator-only diagnostic (F-017): the SDK's init message
-                # may report per-MCP-server connection status, which this
-                # code has never captured before -- if a real Swiggy MCP
-                # handshake failure is happening, this is where it would
-                # show up. See FAILURE_LOG.md F-044's live investigation.
-                print(f"[agent] SystemMessage(init) data={init_data!r}", file=sys.stderr)
+                # Real, verified evidence the SDK's own connection layer
+                # reports here -- never a model claim. Real, live-found gap
+                # (2026-09-04, see FAILURE_LOG.md F-044 addendum): a model's
+                # report that Swiggy Instamart's tools never loaded due to a
+                # real connection failure was dismissed as a hallucination
+                # for multiple fix cycles, because this init message was
+                # never read past `session_id` before -- it was reporting
+                # exactly this the whole time.
+                for server_status in init_data.get("mcp_servers", []):
+                    if server_status.get("status") == "failed":
+                        spec = spec_by_server.get(server_status.get("name", ""))
+                        connector_id = spec.connector_id if spec else server_status.get("name")
+                        if connector_id and connector_id not in failed_connector_ids:
+                            failed_connector_ids.append(connector_id)
+                            print(
+                                f"[agent] MCP handshake failed for {connector_id!r} "
+                                f"(server_name={server_status.get('name')!r})",
+                                file=sys.stderr,
+                            )
             if isinstance(message, SystemMessage) and message.subtype == "api_retry":
                 data = getattr(message, "data", {}) or {}
                 if data.get("error_status") == 401 or data.get("error") == "authentication_failed":
@@ -315,4 +329,5 @@ class SubscriptionAgentRuntime:
             execution_id=turn_execution_id,
             usage=usage,
             session_context={"resume": new_session_id} if new_session_id else {},
+            failed_connector_ids=failed_connector_ids,
         )

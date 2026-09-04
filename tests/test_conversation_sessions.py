@@ -5,8 +5,8 @@ independently of any single turn's own image -- both real, live-found gaps
 """
 
 from orderguard.agent.conversation_sessions import (
-    conversation_sessions_engine, ever_attempted_connector_ids, load_conversation_session,
-    save_conversation_session, was_image_ever_attached,
+    conversation_sessions_engine, ever_attempted_connector_ids, ever_failed_connector_ids,
+    load_conversation_session, save_conversation_session, was_image_ever_attached,
 )
 
 
@@ -79,3 +79,30 @@ def test_attempted_connector_ids_accumulate_across_turns_instead_of_replacing():
 def test_no_saved_session_has_no_attempted_connectors():
     engine = conversation_sessions_engine(":memory:")
     assert ever_attempted_connector_ids(engine, "never-seen", "COMMERCE_GENERAL") == frozenset()
+
+
+def test_failed_connector_ids_are_sticky_and_separate_from_attempted():
+    """Real, live-found gap (2026-09-04, see FAILURE_LOG.md F-044's
+    addendum): a connector's MCP handshake failing (real evidence from the
+    SDK's own init message) is a DIFFERENT fact from "never attempted" --
+    conflating them would make the unverified-connector nudge keep asking
+    the model to retry something already confirmed broken."""
+    engine = conversation_sessions_engine(":memory:")
+    save_conversation_session(
+        engine, "session-1", "COMMERCE_GENERAL", {"resume": "a"},
+        failed_connector_ids=["swiggy-instamart"],
+    )
+    assert ever_failed_connector_ids(engine, "session-1", "COMMERCE_GENERAL") == frozenset({"swiggy-instamart"})
+    assert ever_attempted_connector_ids(engine, "session-1", "COMMERCE_GENERAL") == frozenset()
+
+    save_conversation_session(
+        engine, "session-1", "COMMERCE_GENERAL", {"resume": "b"}, failed_connector_ids=["github"],
+    )
+    assert ever_failed_connector_ids(engine, "session-1", "COMMERCE_GENERAL") == frozenset(
+        {"swiggy-instamart", "github"}
+    )
+
+
+def test_no_saved_session_has_no_failed_connectors():
+    engine = conversation_sessions_engine(":memory:")
+    assert ever_failed_connector_ids(engine, "never-seen", "COMMERCE_GENERAL") == frozenset()

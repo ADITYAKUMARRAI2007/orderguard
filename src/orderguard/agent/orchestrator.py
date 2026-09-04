@@ -107,6 +107,15 @@ class MissionStepResult:
     # about itself, so the UI/audit has ground truth independent of the
     # model's own narration.
     attempted_connector_ids: list[str] = field(default_factory=list)
+    # Real, verified evidence (never a model claim) that a connector's MCP
+    # handshake actually failed this turn — see runtime/base.py::AgentTurnResult
+    # and FAILURE_LOG.md F-044's addendum: a model's report that Swiggy
+    # Instamart's tools never loaded was dismissed as a hallucination for
+    # multiple fix cycles because nothing in this codebase read the SDK's
+    # own per-server connection status before now. When a connector is in
+    # here, its absence from attempted_connector_ids is fully explained and
+    # not a sign of the model avoiding a real, callable tool.
+    failed_connector_ids: list[str] = field(default_factory=list)
     # Opaque continuation state for whichever runtime handled this step —
     # see runtime/base.py::AgentTurnResult. The caller (missions.py/app.py)
     # persists this and passes it back on the NEXT call in the same
@@ -140,6 +149,7 @@ async def run_agent_turn(
     image: ImageInput | None = None,
     image_context_established: bool = False,
     previously_attempted_connector_ids: frozenset[str] = frozenset(),
+    previously_failed_connector_ids: frozenset[str] = frozenset(),
 ) -> MissionStepResult:
     """One capability's worth of the mission: eligible connector(s) in
     ``category`` are offered to ``runtime``; whatever tool calls it makes are
@@ -163,6 +173,16 @@ async def run_agent_turn(
     from doing exactly that on the NEXT turn; a deterministic note stating
     which eligible connectors are still unverified, re-computed and
     re-stated fresh every turn, is what this argument exists to build.
+
+    ``previously_failed_connector_ids`` is the same kind of real evidence,
+    but for a connector whose MCP handshake actually failed in an earlier
+    turn (see runtime/base.py::AgentTurnResult.failed_connector_ids and
+    FAILURE_LOG.md F-044's addendum: a model's report that Swiggy
+    Instamart's tools never loaded was wrongly dismissed as a
+    hallucination for multiple fix cycles because this signal was never
+    read before). Excluded from the unverified-connector note below --
+    telling the model to keep retrying something already confirmed broken
+    by real evidence would just be noise, not a correction.
     """
     engine = ConnectorEligibilityEngine(accounts)
     eligible = engine.eligible_for(
@@ -212,7 +232,10 @@ async def run_agent_turn(
     # a brand-new turn has no earlier claim in this thread to be stale, so
     # there is nothing yet worth correcting; adding the note there anyway
     # would just be noise on every ordinary first turn.
-    unverified_ids = [c.id for c in eligible if c.id not in previously_attempted_connector_ids]
+    unverified_ids = [
+        c.id for c in eligible
+        if c.id not in previously_attempted_connector_ids and c.id not in previously_failed_connector_ids
+    ]
     effective_message = message
     if session_context is not None and unverified_ids:
         # Real, live-observed follow-up to F-044 (see FAILURE_LOG.md): a
@@ -321,6 +344,7 @@ async def run_agent_turn(
         budget_minor=budget_minor,
         eligible_connector_ids=[c.id for c in eligible],
         attempted_connector_ids=attempted_connector_ids,
+        failed_connector_ids=turn.failed_connector_ids,
     )
 
 
