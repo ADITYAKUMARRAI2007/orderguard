@@ -3146,3 +3146,67 @@ the one line the user was looking at. And a reply that gets discarded
 without being read is not "no evidence" — it is evidence thrown away; the
 sentence that explained this whole failure had been sitting in an unread
 response body since F-036.
+
+## Second addendum — root cause reproduced deliberately, both directions
+
+Stopped theorising and ran the real thing against the deployed API, one
+variable at a time. Same account, same session, same minute:
+
+| item | address used at approval | result |
+|---|---|---|
+| `C1MTLHOLYE` nectr Potato 1kg | **Work** — Electronic City, Bengaluru | SUCCEEDED, 5 items, 4 preserved |
+| `X0TDQMARG2` nectr Ooty Potato 500g | **Home** — Mughalsarai, Uttar Pradesh | 502 — *"Your cart could not be updated — no valid items remained, so the cart is now empty."* |
+
+Potato is not the problem, and never was. Two potatoes from the same
+search, one minute apart; the only difference is which saved address the
+approval wrote to. Before this, two consecutive Work writes 45 seconds
+apart both verified, the second reporting `preserved_existing_items: 3` —
+so the cart persists perfectly well when the address matches.
+
+Then the UI, read live off the deployed page at the moment of approval:
+
+```
+DELIVER TO — REAL SAVED ADDRESSES
+HOME    ... Mughalsarai, Uttar Pradesh 232101
+OTHER   ... Mughalsarai, Uttar Pradesh 232101
+WORK    ... Electronics City, Bengaluru, Karnataka 560100
+```
+
+Three addresses, presented as equally valid, **Home first and Work last**,
+for a request that literally said "for work address" and offers that only
+exist in a Bengaluru dark store. Two of the three choices are ~2000km from
+the store the offers came from and are guaranteed to fail — and failing
+does not mean "that item wasn't added", it means the whole cart is
+emptied. That is the complete mechanism behind "the onion I added
+successfully was gone by the time I looked."
+
+## Fix (second addendum)
+`CommerceResult` now carries `address_id`: the real delivery address the
+search was actually scoped to, read off the genuine tool-call arguments.
+Matched by *shape* — any argument whose name mentions an address with a
+non-empty string value — not by a hard-coded key, because this repo has
+never captured `search_products`' exact argument spelling from a live
+schema and inventing one would be the same class of guess that caused
+F-037. `OfferApproval` uses it directly and never asks; when it is absent
+the old picker is used unchanged, so nothing regresses.
+
+## Regression test (second addendum)
+`tests/test_normalizer.py`: the address is carried from a real call;
+a differently-spelled argument (`selected_address_id`) is still found;
+no address argument leaves it `None` rather than fabricating one.
+
+## Still unverified at time of writing
+That Swiggy's `search_products` really does send an address argument at
+all — the shape-match is correct for any spelling, but if Swiggy passes
+the address some other way entirely, `address_id` stays `None` and the
+picker still appears. Confirming it needs one live mission, which is
+currently blocked: the Claude subscription hit its session limit ("resets
+5pm UTC") during this investigation's own test missions.
+
+## Lesson (second addendum)
+The first two fixes both made the failure honest without making it stop
+happening — necessary, and not the same thing as solved. What actually
+found the cause was changing exactly one variable against the real API
+and writing down both outcomes; two runs, ninety seconds, after several
+rounds of plausible theorising that each fitted the evidence and were
+each wrong.
