@@ -2825,3 +2825,68 @@ Direct — this is the actual, permanent fix for "why does it always say
 connected," not a one-time correction. It self-updates on every real
 mission turn from here forward, for any connector, not just Swiggy
 Instamart.
+
+# F-045 — Deploying the connector-health fix itself silently hung the whole service for ten minutes
+
+## Failure
+Deploying F-044's fourth addendum (the `connectoraccount` table migration)
+produced total silence: no startup logs, no error, no traceback -- just
+nothing, for over six minutes, while `curl` against the live URL timed
+out completely. The service was genuinely down, not just slow to deploy.
+
+## Cause
+Real, observed directly via Render's own instance metrics: the new
+instance's memory climbed to 147MB (a real, loaded Python process) while
+its CPU stayed near zero -- consistent with blocking on I/O, not crashing
+or never starting. Postgres `ALTER TABLE` takes an ACCESS EXCLUSIVE lock
+with **no default timeout**. This project's Postgres connection has been
+through an unusually large number of redeploys, crashes, and a free-tier
+sleep/wake cycle within this one long session -- more than enough
+opportunity for an orphaned connection from an earlier, now-dead instance
+to still be holding a lock Neon hadn't yet reaped. The new migration code
+(this same addendum's own `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`,
+run with no `lock_timeout` set) blocked on that lock indefinitely, with
+nothing to ever time it out or report it -- so the whole deploy hung
+before uvicorn ever logged a single line.
+
+## How I proved it
+Checked `get_metrics` for the stuck instance directly rather than
+guessing: real memory growth with near-zero CPU is the specific signature
+of an I/O wait, not a crash (which frees memory) or a hang before Python
+even starts (which shows no memory growth at all). Confirmed a SECOND
+instance hit the identical point and also stalled before concluding this
+was systemic rather than a one-off. The deploy ultimately recovered on
+its own at the ten-minute mark, consistent with the blocking lock being
+released by Neon's own idle-connection reaping running independently.
+
+## Fix
+Both live Postgres migrations (`connector_accounts.py`,
+`conversation_sessions.py` — the only two that run `ALTER TABLE` against
+an already-shipped table) now run `SET LOCAL lock_timeout = '10s'` before
+the `ALTER TABLE`, inside the same transaction. A stuck lock now fails
+loudly with a clear Postgres error within 10 seconds instead of hanging
+the entire deploy, silently, for an unbounded amount of time.
+
+## Regression test
+None added — this is a live infrastructure timing property (real lock
+contention against a real Postgres connection pool), not something an
+offline unit test can reproduce or usefully assert on.
+
+## Lesson
+A migration that has run safely several times before (this project's own
+`_migrate_columns`/`_migrate_account_columns` pattern, used successfully
+across F-039, F-042, and F-044's first three addenda) is not proof the
+NEXT run is safe — each one is a fresh negotiation for a real lock
+against whatever else happens to be holding the table at that exact
+moment, and a long, redeploy-heavy session is exactly the condition that
+makes a stale lock likeliest. Fixing the CODE was correct every time
+before; this time the code was fine and the risk was in the deploy
+environment's own accumulated state — worth remembering that "the same
+pattern that worked before" and "safe" are not the same claim.
+
+## Production relevance
+Direct and severe — this was a real, user-facing outage (confirmed via
+`curl` timing out completely) caused by shipping the very fix meant to
+make the product MORE trustworthy. The `lock_timeout` fix generalizes to
+every future migration this project ever adds to an already-live table,
+not just these two.

@@ -118,6 +118,16 @@ def _migrate_columns(engine: Engine) -> None:
                     )
     else:
         with engine.begin() as connection:
+            # Real, live-found gap (2026-09-04): Postgres DDL takes an
+            # ACCESS EXCLUSIVE lock with NO default timeout -- an orphaned
+            # connection from any earlier crashed/redeployed instance
+            # holding even a weak lock on this table blocks ALTER TABLE
+            # forever, silently hanging the entire deploy before uvicorn
+            # ever starts (observed directly on connector_accounts.py's
+            # equivalent migration: two consecutive deploys hung at
+            # exactly this point with zero error output). A short
+            # lock_timeout makes that fail fast and loud instead.
+            connection.exec_driver_sql("SET LOCAL lock_timeout = '10s'")
             for name, (_, pg_ddl) in additions.items():
                 connection.exec_driver_sql(
                     f"ALTER TABLE conversationsessionrecord ADD COLUMN IF NOT EXISTS {name} {pg_ddl}"
