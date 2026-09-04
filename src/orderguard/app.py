@@ -2176,6 +2176,31 @@ async def connector_addresses(connector_id: str) -> dict:
     }
 
 
+@app.get("/api/agent/connectors/{connector_id}/cart-debug", include_in_schema=False)
+async def connector_cart_debug(connector_id: str) -> dict:
+    """Operator-only diagnostic: the RAW get_cart response, verbatim, with
+    no shape assumed or fields dropped. Investigating a real, reproduced
+    incident: writes verified present via this exact same get_cart call
+    never appear on the real swiggy.com site for the same account/address
+    afterward. Needed to see whether Swiggy's response carries a real
+    cart/channel identifier this project has been discarding, before
+    guessing at a fix. R0, read-only, same tool call app.py's own
+    /addresses endpoint already makes directly."""
+    if connector_id != "swiggy-instamart":
+        raise HTTPException(status_code=400, detail=f"{connector_id!r} has no cart debug wired up")
+    token = ACCOUNTS.bearer_token(connector_id)
+    if not token:
+        raise HTTPException(status_code=409, detail=f"{connector_id!r} is not connected")
+    try:
+        result = await call_tool_directly(
+            url="https://mcp.swiggy.com/im", bearer_token=token,
+            tool_name="get_cart", arguments={},
+        )
+    except DirectMcpCallError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+    return {"raw": result}
+
+
 class SetDefaultAddressRequest(BaseModel):
     model_config = STRICT
     address_id: str = Field(min_length=1, max_length=64)
