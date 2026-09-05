@@ -103,7 +103,9 @@ class LedgerStatus(StrEnum):
                              # treated as FAILED (that would license a blind
                              # retry that could create a second real order) and
                              # never treated as CAPTURED. The only way out is
-                             # asking Razorpay directly — see reconcile.py.
+                             # asking Razorpay directly — see
+                             # app.py::_resolve_unknown_order, which calls
+                             # executor.find_order_by_receipt.
 
 
 class LedgerEntry(SQLModel, table=True):
