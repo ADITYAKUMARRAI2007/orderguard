@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-09-05T17:22:57.352453+00:00",
+  "generated_at": "2026-09-05T18:25:02.808526+00:00",
   "metadata": {
-    "commit": "29e0161482bfcd791c7b800c7a802be4e44494d2",
-    "timestamp": "2026-09-05T17:22:57.379713+00:00",
+    "commit": "9deca1dd535b8172a1cf94fa2f7807d412ed82c4",
+    "timestamp": "2026-09-05T18:25:02.836785+00:00",
     "seed": 20260831,
     "model_runtime": "deterministic-offline",
     "scenario_count": 68,
@@ -14,8 +14,8 @@
     "false_match_rate": 0.0,
     "false_block_rate": 0.0,
     "duplicate_business_effects": 0,
-    "p50_ms": 0.06341608241200447,
-    "p95_ms": 0.6921669701114297,
+    "p50_ms": 0.06104202475398779,
+    "p95_ms": 0.2907909220084548,
     "by_category": {
       "correct": [
         13,

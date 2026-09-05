@@ -32,7 +32,7 @@ type ApprovalState =
   | { phase: "awaiting-approval"; offer: ScoredOffer; proposalId: string; summary: string; addressId: string }
   | { phase: "executing" }
   | { phase: "done"; checkoutUrl: string; itemsWritten: number; preservedExisting: number; cartReadSkippedReason: string | null }
-  | { phase: "error"; message: string };
+  | { phase: "error"; message: string; checkoutUrl?: string };
 
 function offerKey(offer: ScoredOffer): string {
   return `${offer.offer.store}|${offer.offer.variant_id}`;
@@ -88,7 +88,11 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
         setState({ phase: "picking-address", offer, addresses: addrs.addresses });
       }
     } catch (err) {
-      setState({ phase: "error", message: err instanceof ApiError ? err.message : String(err) });
+      setState({
+        phase: "error",
+        message: err instanceof ApiError ? err.message : String(err),
+        checkoutUrl: err instanceof ApiError ? err.checkoutUrl : undefined,
+      });
     }
   }
 
@@ -107,7 +111,11 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
         summary: proposal.summary, addressId,
       });
     } catch (err) {
-      setState({ phase: "error", message: err instanceof ApiError ? err.message : String(err) });
+      setState({
+        phase: "error",
+        message: err instanceof ApiError ? err.message : String(err),
+        checkoutUrl: err instanceof ApiError ? err.checkoutUrl : undefined,
+      });
     }
   }
 
@@ -125,7 +133,11 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
         connectorId, checkoutUrl: outcome.checkout_url, itemsWritten: outcome.items_written.length,
       });
     } catch (err) {
-      setState({ phase: "error", message: err instanceof ApiError ? err.message : String(err) });
+      setState({
+        phase: "error",
+        message: err instanceof ApiError ? err.message : String(err),
+        checkoutUrl: err instanceof ApiError ? err.checkoutUrl : undefined,
+      });
     }
   }
 
@@ -281,7 +293,17 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
       {state.phase === "error" && (
         <div className="mt-3 border-t-2 border-destructive pt-3">
           <div className="label-micro text-destructive mb-1">HALTED BEFORE WRITING ANYTHING</div>
-          <p className="text-[12px] text-muted-foreground">{state.message}</p>
+          <p className="text-[12px] text-muted-foreground mb-3">{state.message}</p>
+          {state.checkoutUrl && (
+            <a
+              href={state.checkoutUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-block label-micro border-2 border-destructive px-3 py-1.5 hover:bg-destructive hover:text-background"
+            >
+              OPEN THE REAL CART TO ADD IT YOURSELF →
+            </a>
+          )}
         </div>
       )}
     </div>

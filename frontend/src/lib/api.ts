@@ -247,9 +247,15 @@ export interface SessionReceipt {
 
 class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  // Set only when the backend's error detail carried one alongside the
+  // message (e.g. a cart write that could not verify but still names the
+  // connector's real cart URL — see approve_cart_action's own comment).
+  // Never invented client-side; absent whenever the backend didn't send it.
+  checkoutUrl?: string;
+  constructor(status: number, message: string, checkoutUrl?: string) {
     super(message);
     this.status = status;
+    this.checkoutUrl = checkoutUrl;
   }
 }
 
@@ -272,7 +278,15 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     /* empty response */
   }
   if (!res.ok) {
-    throw new ApiError(res.status, body?.detail || `Request failed (${res.status})`);
+    // FastAPI's `detail` is usually a plain string, but approve_cart_action
+    // sends {message, checkout_url} on a write it could not verify — detect
+    // the shape rather than assuming one, so every other endpoint's plain
+    // string detail keeps working exactly as before.
+    const detail = body?.detail;
+    if (detail && typeof detail === "object" && typeof detail.message === "string") {
+      throw new ApiError(res.status, detail.message, detail.checkout_url || undefined);
+    }
+    throw new ApiError(res.status, typeof detail === "string" ? detail : `Request failed (${res.status})`);
   }
   return body as T;
 }

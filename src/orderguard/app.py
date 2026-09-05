@@ -2484,6 +2484,8 @@ async def approve_cart_action(proposal_id: str, request: ApproveCartActionReques
         save_proposal(CART_PROPOSALS_DB, proposal)
         raise HTTPException(status_code=409, detail=f"{proposal.connector_id!r} is not connected")
 
+    connector = agent_connector_by_id(proposal.connector_id)
+
     try:
         if proposal.connector_id == "swiggy-instamart":
             result = await add_to_instamart_cart(
@@ -2496,11 +2498,19 @@ async def approve_cart_action(proposal_id: str, request: ApproveCartActionReques
         proposal.status = "FAILED"
         save_proposal(CART_PROPOSALS_DB, proposal)
         append_event(AUDIT, "cart_action_failed", {"proposal_id": proposal_id, "reason": str(exc)})
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+        # A write this could not verify is not proof nothing reached Swiggy —
+        # see swiggy_cart.py's own docstring on the write/read disagreement.
+        # checkout_url is a static per-connector fact (connector_registry.py),
+        # never conditioned on this write's own outcome, so it is honest to
+        # hand it back here too: the one thing left to do is let the user
+        # open the real cart and finish or retry it themselves.
+        raise HTTPException(
+            status_code=502,
+            detail={"message": str(exc), "checkout_url": connector.checkout_url},
+        ) from None
 
     proposal.status = "SUCCEEDED"
     save_proposal(CART_PROPOSALS_DB, proposal)
-    connector = agent_connector_by_id(proposal.connector_id)
     append_event(AUDIT, "cart_action_succeeded", {
         "proposal_id": proposal_id, "connector_id": proposal.connector_id,
         "items_written": result["items_written"], "preserved_existing_items": result["preserved_existing_items"],

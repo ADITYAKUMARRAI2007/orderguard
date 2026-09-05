@@ -417,6 +417,36 @@ def test_approve_cart_action_executes_the_exact_stored_arguments_not_a_fresh_dec
     assert kwargs["address_id"] == "real-address"
 
 
+def test_approve_cart_action_hands_back_the_real_cart_url_even_on_a_failed_write():
+    """A write that could not be verified is not proof nothing reached
+    Swiggy -- the user's only real recourse is to open the actual cart
+    themselves. checkout_url must ride along on the 502, not just the 200."""
+    from unittest.mock import AsyncMock, patch
+    from orderguard.agent.swiggy_cart import SwiggyCartError
+
+    propose = client.post("/api/agent/cart-actions/propose", json={
+        "connector_id": "swiggy-instamart", "variant_id": "SPIN-UNVERIFIED", "quantity": 1,
+        "offer_title": "Onion", "offer_price_minor": 5800,
+    })
+    proposal_id = propose.json()["proposal_id"]
+
+    with patch.object(app_module.ACCOUNTS, "bearer_token", return_value="fake-token"), \
+         patch.object(
+             app_module, "add_to_instamart_cart",
+             new=AsyncMock(side_effect=SwiggyCartError(
+                 "update_cart returned no error, but the item is not actually "
+                 "in the real cart when read back independently -- nothing was added."
+             )),
+         ):
+        resp = client.post(f"/api/agent/cart-actions/{proposal_id}/approve", json={"address_id": "real-address"})
+
+    assert resp.status_code == 502
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict)
+    assert "not actually" in detail["message"]
+    assert detail["checkout_url"] == "https://www.swiggy.com/instamart/cart"
+
+
 def test_approve_cart_action_cannot_be_replayed_twice():
     from unittest.mock import AsyncMock, patch
 
