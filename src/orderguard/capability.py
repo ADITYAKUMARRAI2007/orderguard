@@ -169,8 +169,16 @@ def issue_capability(
     tests/test_architecture_boundaries.py for who may reach it at all.
     Nothing here checks that gates already passed; that is the caller's
     job (app.py, only after evaluate_pre_payment_gates.allow is True).
+
+    Real, found gap: only ``consume_capability`` held ``_CONSUME_LOCK`` —
+    this function wrote to the identical shared SQLite connection
+    (``:memory:``/file StaticPool, see this module's own docstring) without
+    it. Two different purchases minting a capability at the same instant
+    share ONE global ``CAPABILITY_DB`` engine, so this was exposed to the
+    same ``sqlite3.InterfaceError`` under real concurrent load as every
+    other unlocked writer in this codebase — closed the same way.
     """
-    with Session(engine) as db:
+    with _CONSUME_LOCK, Session(engine) as db:
         cap = ExecutionCapability(
             capability_id=f"cap_{uuid.uuid4().hex}",
             session_id=session_id, operation=operation, merchant=merchant,
