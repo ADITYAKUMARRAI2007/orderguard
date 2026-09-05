@@ -89,11 +89,17 @@ REGISTRY: tuple[RegisteredConnector, ...] = (
         # re-detect a delivery location from the browser's own signal
         # (IP/geolocation), which is not the address a real write just used
         # -- exactly the "sorry, we do not deliver here" a real user hit.
-        # /instamart/cart is the real, already-observed URL rendering the
-        # actual saved cart (with a live "Review Items" panel, item list,
-        # and "View Cart" button) once the account's own selected address
-        # is what the page is using, not a fresh guess.
-        checkout_url="https://www.swiggy.com/instamart/cart",
+        # /instamart/cart on swiggy.com was the fix for THAT, at the time.
+        #
+        # Superseded (2026-09-06, another real user's own side-by-side
+        # screenshots, same account, same moment): swiggy.com/instamart/cart
+        # now renders "Your cart is getting lonely" -- genuinely empty --
+        # while instamart.in/cart, opened at the exact same time, shows the
+        # real populated cart (matching this backend's own independent
+        # get_cart read: same two items, same ₹ total). Swiggy has split
+        # Instamart onto its own domain since the 09-04 fix; swiggy.com's
+        # path is a stale, separately-backed cart view now, not a redirect.
+        checkout_url="https://www.instamart.in/cart",
     ),
     RegisteredConnector(
         id="swiggy-food",

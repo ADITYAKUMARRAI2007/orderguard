@@ -1,7 +1,7 @@
 {
   "metadata": {
-    "commit": "9deca1dd535b8172a1cf94fa2f7807d412ed82c4",
-    "timestamp": "2026-09-05T18:25:02.806835+00:00",
+    "commit": "e636bce7412db63888a47a7459c87b93a42b43ba",
+    "timestamp": "2026-09-05T18:40:56.084776+00:00",
     "seed": 20260831,
     "model_runtime": "api+subscription-offline-fixtures",
     "scenario_count": 3,

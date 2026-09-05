@@ -410,7 +410,7 @@ def test_approve_cart_action_executes_the_exact_stored_arguments_not_a_fresh_dec
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "SUCCEEDED"
-    assert body["checkout_url"] == "https://www.swiggy.com/instamart/cart"
+    assert body["checkout_url"] == "https://www.instamart.in/cart"
     _args, kwargs = mock_write.call_args
     assert kwargs["spin_id"] == "SPIN-APPROVED"
     assert kwargs["quantity"] == 3
@@ -444,7 +444,7 @@ def test_approve_cart_action_hands_back_the_real_cart_url_even_on_a_failed_write
     detail = resp.json()["detail"]
     assert isinstance(detail, dict)
     assert "not actually" in detail["message"]
-    assert detail["checkout_url"] == "https://www.swiggy.com/instamart/cart"
+    assert detail["checkout_url"] == "https://www.instamart.in/cart"
 
 
 def test_approve_cart_action_cannot_be_replayed_twice():
