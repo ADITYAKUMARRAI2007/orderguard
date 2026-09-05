@@ -24,6 +24,8 @@ token in v1** — re-running this whole flow is the only way to renew one.
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 
 from .connector_accounts import generate_pkce_pair
@@ -35,6 +37,57 @@ __all__ = [
 
 _BASE = "https://mcp.swiggy.com"
 _TIMEOUT = httpx.Timeout(20.0, connect=8.0)
+
+# Real, reproduced (2026-09-06): a Reconnect click failed with the raw
+# resolver errno "[Errno 8] nodename nor servname provided, or not known",
+# while three DNS lookups for the SAME host moments later all resolved
+# fine and the backend had just completed a real cart write against it. A
+# transient local resolver hiccup is not a reason to make someone re-run an
+# OAuth flow, and an errno is not something they can act on.
+_CONNECT_ATTEMPTS = 3
+_RETRY_DELAY_SECONDS = 1.0
+
+# What the OS resolver actually says for "that name did not resolve", on
+# macOS and Linux. Matched narrowly, so a genuine refusal (a real HTTP
+# status, a TLS failure) is never softened into this friendlier message.
+_DNS_FAILURE_MARKERS = (
+    "nodename nor servname",              # macOS getaddrinfo
+    "name or service not known",          # glibc
+    "temporary failure in name resolution",
+    "getaddrinfo failed",
+)
+
+
+def _connection_error_message(what: str, exc: Exception) -> str:
+    """An errno is not a thing a user can act on. Say what failed in words,
+    and whether trying again is actually worth their time."""
+    if any(marker in str(exc).lower() for marker in _DNS_FAILURE_MARKERS):
+        return (
+            f"{what}: could not resolve mcp.swiggy.com. That is a local DNS "
+            "or network problem, not Swiggy refusing the request — check "
+            "your connection and try again."
+        )
+    return f"{what}: could not reach mcp.swiggy.com ({exc})"
+
+
+async def _post_with_retry(
+    http: httpx.AsyncClient, url: str, *, json: dict, what: str,
+) -> httpx.Response:
+    """POST, retrying ONLY connection-level failures — never a real HTTP
+    response, however bad its status code, because that is Swiggy having
+    genuinely answered and is not made truer by asking again."""
+    last: Exception | None = None
+    for attempt in range(_CONNECT_ATTEMPTS):
+        try:
+            return await http.post(url, json=json)
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+            last = exc
+            if attempt + 1 < _CONNECT_ATTEMPTS:
+                await asyncio.sleep(_RETRY_DELAY_SECONDS)
+        except httpx.HTTPError as exc:
+            raise SwiggyOAuthError(f"{what}: {exc}") from exc
+    assert last is not None
+    raise SwiggyOAuthError(_connection_error_message(what, last)) from last
 
 
 class SwiggyOAuthError(RuntimeError):
@@ -78,10 +131,10 @@ async def register_client(
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=_TIMEOUT)
     try:
-        try:
-            resp = await http.post(f"{_BASE}/auth/register", json=body)
-        except httpx.HTTPError as exc:
-            raise SwiggyOAuthError(f"dynamic client registration failed: {exc}") from exc
+        resp = await _post_with_retry(
+            http, f"{_BASE}/auth/register", json=body,
+            what="dynamic client registration failed",
+        )
     finally:
         if owns_client:
             await http.aclose()
@@ -129,10 +182,10 @@ async def exchange_code(
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=_TIMEOUT)
     try:
-        try:
-            resp = await http.post(f"{_BASE}/auth/token", json=body)
-        except httpx.HTTPError as exc:
-            raise SwiggyOAuthError(f"token exchange failed: {exc}") from exc
+        resp = await _post_with_retry(
+            http, f"{_BASE}/auth/token", json=body,
+            what="token exchange failed",
+        )
     finally:
         if owns_client:
             await http.aclose()

@@ -2264,7 +2264,19 @@ def agent_connectors() -> dict:
                 else ACCOUNTS.status(c.id)
             ),
             "mcp_verified_status": mcp_status,
-            "mcp_verified_checked_at": mcp_checked_at.isoformat() if mcp_checked_at else None,
+            # Real, found bug (2026-09-06): this is stored naive-UTC on
+            # purpose (connector_accounts._now()'s own docstring explains
+            # why), and .isoformat() on a naive datetime emits NO timezone
+            # marker. JavaScript's `new Date("2026-09-05T20:17:30")` parses a
+            # marker-less date-time as LOCAL time per the ECMAScript spec —
+            # so in IST (UTC+5:30) a check that had just run rendered as
+            # "checked 5h ago", making a healthy connector look stale enough
+            # that a real user clicked Reconnect on it. Stamped as UTC here,
+            # at the API boundary, so the wire value says what it means.
+            "mcp_verified_checked_at": (
+                mcp_checked_at.replace(tzinfo=timezone.utc).isoformat()
+                if mcp_checked_at else None
+            ),
             "tools": [{"name": t.name, "risk_tier": t.risk_tier} for t in c.tools],
             # Visible and categorised, but a connector with no
             # risk-classified tools can offer the model nothing — see

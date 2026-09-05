@@ -43,6 +43,34 @@ def test_agent_connectors_lists_the_registry():
     assert {"swiggy-instamart", "swiggy-food", "shopify", "github"} <= ids
 
 
+def test_mcp_checked_at_is_sent_as_utc_so_the_ui_cannot_misread_it():
+    """Real, found bug (2026-09-06): this timestamp is stored naive-UTC (see
+    connector_accounts._now()), and .isoformat() on a naive datetime emits no
+    timezone marker. JavaScript parses a marker-less date-time as LOCAL time,
+    so in IST (UTC+5:30) a check that had just run rendered as "checked 5h
+    ago" -- stale enough that a real user clicked Reconnect on a healthy
+    connector. The wire value must say which zone it is in."""
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    stamped = datetime(2026, 9, 5, 20, 17, 30)  # naive, as stored
+    with patch.object(app_module.ACCOUNTS, "mcp_health", return_value=("connected", stamped)):
+        resp = client.get("/api/agent/connectors")
+
+    assert resp.status_code == 200
+    checked = [
+        c["mcp_verified_checked_at"] for c in resp.json()["connectors"]
+        if c["mcp_verified_checked_at"]
+    ]
+    assert checked, "expected at least one connector to report a check time"
+    for value in checked:
+        # Parseable as an aware datetime, and genuinely UTC -- not a bare
+        # local-looking string a browser would shift by its own offset.
+        parsed = datetime.fromisoformat(value)
+        assert parsed.tzinfo is not None, f"{value!r} has no timezone marker"
+        assert parsed.utcoffset() == timezone.utc.utcoffset(None)
+
+
 def test_no_registered_connector_ever_lists_an_r3_tool_over_the_api():
     resp = client.get("/api/agent/connectors")
     for connector in resp.json()["connectors"]:
