@@ -57,6 +57,18 @@ whether the store just searched can be written to. Recognized as the same
 cannot even be read because its own anchor point is unavailable holds
 nothing that could be merged into a write going to a different address
 anyway.
+
+Real, reproduced incident (2026-09-06): a write reported as failed here
+(two read-back attempts, ~2s apart, both missed it) was independently
+confirmed minutes later, on the real Instamart site, to have actually
+landed -- exactly as sent, nothing invented. Different items visibly
+settle on Swiggy's side at different speeds; the ~2-4s verification
+window this function used was catching some writes mid-propagation and
+reporting a real, eventual success as a failure. Widened to 5 attempts,
+3s apart (up to ~12s) on this evidence of how long a genuine settle can
+actually take -- still bounded, never indefinite, and a write that is
+genuinely never going to land still fails exactly as before, just after
+a fairer wait.
 """
 
 from __future__ import annotations
@@ -183,16 +195,22 @@ async def add_to_instamart_cart(
     # claimed all four items were saved, but an independent get_cart called
     # moments later showed a completely different, smaller cart that didn't
     # even contain the items just sent -- Swiggy's write path and read path
-    # disagreeing with each other, not a rejection either one reported. A
-    # second, later read-back sometimes shows the write settling correctly
-    # (confirmed live: two back-to-back writes against a fresh token both
-    # landed and read back correctly seconds apart), so one retry after a
-    # short delay is a real, evidenced mitigation for propagation lag --
-    # not a guess -- before this function gives up and reports failure.
+    # disagreeing with each other, not a rejection either one reported.
+    #
+    # Real, reproduced incident (2026-09-06): a write reported as failed
+    # here (Fortune Mustard Oil, 2 read-back attempts ~2s apart both missed
+    # it) was independently confirmed, minutes later on the real Instamart
+    # site, to have actually landed -- exactly as sent. Different items
+    # visibly settle on Swiggy's side at different speeds; a ~2-4s window
+    # was catching some writes mid-propagation and reporting a real success
+    # as a failure. Widened to 5 attempts / 3s apart (up to ~12s) on
+    # evidence of how long a genuine settle can take, not a guess -- still
+    # bounded, never indefinite, and a write that fails even this window
+    # is reported exactly as before.
     confirmed: dict | None = None
     landed = False
     lost: list[str] = []
-    attempts_left = 2
+    attempts_left = 5
     while True:
         attempts_left -= 1
         try:
@@ -201,7 +219,7 @@ async def add_to_instamart_cart(
             )
         except DirectMcpCallError as exc:
             if attempts_left > 0:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(3.0)
                 continue
             _log_write_evidence(current, write_arguments, write_reply, None)
             raise SwiggyCartError(
@@ -228,7 +246,7 @@ async def add_to_instamart_cart(
 
         if (landed and not lost) or attempts_left <= 0:
             break
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(3.0)
 
     if not landed or lost:
         _log_write_evidence(current, write_arguments, write_reply, confirmed)
