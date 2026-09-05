@@ -8,6 +8,7 @@ cart. Third-party checkout is deliberately outside this service's authority.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -23,8 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .cart_verifier import ApprovedCartLine, CartExpectation, compare_cart
 from .checkout_guard import (
-    CheckoutEvidence, ConfirmationResult, PostPaymentEvidence, confirm_cart,
-    evaluate_pre_payment_gates, evaluate_post_payment_gates, ready_for_checkout,
+    DEFAULT_AUTHORIZATION_TTL, CheckoutEvidence, ConfirmationResult, PostPaymentEvidence,
+    confirm_cart, evaluate_pre_payment_gates, evaluate_post_payment_gates, ready_for_checkout,
 )
 from .enums import POST_PAYMENT_GATES
 from .commerce import (
@@ -59,6 +60,7 @@ from .ledger import (
     LedgerStatus,
     attach_order,
     claim_order,
+    claim_order_creation,
     finalize_if_pending,
     get_entry,
     get_entry_by_order_id,
@@ -1083,44 +1085,68 @@ async def create_payment_order(session_id: str) -> PaymentOrderResponse:
     if entry.status is LedgerStatus.UNKNOWN:
         entry = await _resolve_unknown_order(key)
 
-    if created or (entry.status is LedgerStatus.PENDING and not entry.razorpay_order_id):
-        # Minted only now, after gates.allow was already checked above, and
-        # bound to exactly the amount/currency/merchant/receipt the gates
-        # just verified -- not a fresh, independently-suppliable value.
-        # executor.execute_create_order loads these back FROM this row; it
-        # never takes them as separate call arguments.
-        cap = issue_capability(
-            CAPABILITY_DB, session_id=session_id, operation="razorpay.create_order",
-            merchant=expectation.merchant, amount_paise=entry.expected_amount_paise,
-            currency=entry.currency, receipt=key,
-            cart_hash=session.intent.confirmed_cart_hash or "",
-        )
-        try:
-            order = await executor.execute_create_order(CAPABILITY_DB, cap.capability_id)
-        except CapabilityRejected as exc:
-            # A capability we just minted a moment ago failing to consume
-            # means something raced or clocks are unreasonable -- fail
-            # closed rather than fall back to any weaker path.
-            raise HTTPException(
-                status_code=500,
-                detail=f"could not authorize execution: {exc.reason}",
-            ) from exc
-        except RazorpayError as exc:
-            # Never assume FAILED — that would license a blind retry that
-            # could create a second real order if Razorpay actually got the
-            # first request. Mark it uncertain and ask directly before
-            # deciding what to tell the caller.
-            mark_unknown(LEDGER, key)
-            entry = await _resolve_unknown_order(key)
-            if not entry.razorpay_order_id:
+    if not entry.razorpay_order_id and entry.status is LedgerStatus.PENDING:
+        # Real, found gap: `created or (PENDING and no order id yet)` was
+        # not atomic — two concurrent calls for the SAME idempotency key
+        # could both read "no order id yet" before either one finished
+        # attaching it, and both would call Razorpay's create-order API,
+        # producing two real orders for one purchase. claim_order_creation
+        # is the atomic gate: exactly one caller among any number racing
+        # here gets True. See ledger.py's own docstring for the proof shape.
+        if claim_order_creation(LEDGER, key):
+            # Minted only now, after gates.allow was already checked above,
+            # and bound to exactly the amount/currency/merchant/receipt the
+            # gates just verified -- not a fresh, independently-suppliable
+            # value. executor.execute_create_order loads these back FROM
+            # this row; it never takes them as separate call arguments.
+            cap = issue_capability(
+                CAPABILITY_DB, session_id=session_id, operation="razorpay.create_order",
+                merchant=expectation.merchant, amount_paise=entry.expected_amount_paise,
+                currency=entry.currency, receipt=key,
+                cart_hash=session.intent.confirmed_cart_hash or "",
+            )
+            try:
+                order = await executor.execute_create_order(CAPABILITY_DB, cap.capability_id)
+            except CapabilityRejected as exc:
+                # A capability we just minted a moment ago failing to consume
+                # means something raced or clocks are unreasonable -- fail
+                # closed rather than fall back to any weaker path.
                 raise HTTPException(
-                    status_code=502,
-                    detail=f"could not create the Razorpay order: {exc}",
+                    status_code=500,
+                    detail=f"could not authorize execution: {exc.reason}",
                 ) from exc
+            except RazorpayError as exc:
+                # Never assume FAILED — that would license a blind retry that
+                # could create a second real order if Razorpay actually got
+                # the first request. Mark it uncertain and ask directly
+                # before deciding what to tell the caller. Releases the
+                # order-creation claim too (see resolve_unknown) once
+                # Razorpay confirms it never got the request, so a genuine
+                # retry is not permanently locked out.
+                mark_unknown(LEDGER, key)
+                entry = await _resolve_unknown_order(key)
+                if not entry.razorpay_order_id:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"could not create the Razorpay order: {exc}",
+                    ) from exc
+            else:
+                attach_order(LEDGER, key, str(order["id"]))
+                entry = get_entry(LEDGER, key) or entry
+            session.authorization = _issue_session_authorization(session, key, expectation, entry)
         else:
-            attach_order(LEDGER, key, str(order["id"]))
-            entry = get_entry(LEDGER, key) or entry
-        session.authorization = _issue_session_authorization(session, key, expectation, entry)
+            # Another concurrent call already holds the claim for this exact
+            # purchase. Wait briefly for it to finish rather than proceeding
+            # to create a second order ourselves -- the fail-closed shape of
+            # every other race in this codebase, not a guess that it will
+            # resolve in time.
+            entry = await _await_concurrent_order_creation(session, key)
+            if not entry.razorpay_order_id and entry.status is not LedgerStatus.CAPTURED:
+                raise HTTPException(
+                    status_code=409,
+                    detail="order creation for this purchase is already in "
+                           "progress on another request; retry shortly",
+                )
 
     return PaymentOrderResponse(
         key_id=executor.public_key_id(),
@@ -1146,6 +1172,30 @@ async def _resolve_unknown_order(key: str):
     except RazorpayError:
         return get_entry(LEDGER, key)
     resolve_unknown(LEDGER, key, razorpay_order_id=found["id"] if found else None)
+    return get_entry(LEDGER, key)
+
+
+async def _await_concurrent_order_creation(session: ShoppingSession, key: str):
+    """Called only by the loser of ``claim_order_creation`` — another request
+    for this exact idempotency key is already calling Razorpay. Poll the
+    ledger row briefly rather than proceeding to call Razorpay a second time.
+
+    Bounded, not indefinite: if the winner never finishes (a crash, a stuck
+    network call), this gives up and reports the purchase as still in
+    progress rather than either hanging forever or guessing it is safe to
+    create a second order. ``session.authorization`` is also awaited, not
+    just the order id, because the SAME in-memory session object is shared
+    by both requests within this process and the winner sets both.
+    """
+    for _ in range(15):
+        entry = get_entry(LEDGER, key)
+        if entry is None:
+            break
+        if entry.status is LedgerStatus.CAPTURED:
+            return entry
+        if entry.razorpay_order_id and session.authorization is not None:
+            return entry
+        await asyncio.sleep(0.2)
     return get_entry(LEDGER, key)
 
 
@@ -1302,7 +1352,39 @@ async def razorpay_webhook(request: Request) -> dict:
     """The async half of payment truth — see webhooks.py for exactly what is
     verified. Signature checked before anything else is even parsed; a
     duplicate delivery is a no-op, never an error; only a bad signature, an
-    unparseable payload, or an unknown transaction is actually refused.
+    unparseable payload, an unknown transaction, or an amount/currency
+    mismatch is actually refused.
+
+    Three real, found gaps closed here, not hypothetical:
+
+    1. This handler used to finalize the ledger on ``event.amount_paise``
+       straight from the webhook body, with no comparison to what the
+       confirmed cart actually expected — the exact check the browser-driven
+       ``verify_session_payment`` path already enforces via
+       ``payment.py::verify_payment``'s frozen 4-step contract. A valid
+       signature only proves the event came from Razorpay; it says nothing
+       about whether the amount matches THIS purchase's ledger row. Checked
+       explicitly below before any finalize call, the same standard applied
+       everywhere else on this path.
+    2. ``claim_delivery`` used to run before checking whether the event even
+       correlates to a known transaction. A webhook that legitimately arrives
+       before ``create_payment_order`` finishes attaching the order id got
+       404'd AND marked processed in the same call — so Razorpay's retry of
+       that exact ``event_id`` was silently swallowed as "duplicate,
+       already processed" once the order id finally existed, permanently
+       losing the one delivery that could have finalized it. Moved to run
+       only once every other check has passed, so the only thing it can ever
+       de-duplicate is a delivery that was actually going to be acted on.
+    3. The biggest gap: this handler used to skip ``evaluate_post_payment_gates``
+       entirely and call ``_finalize_capture`` straight off a parsed webhook
+       body. ``verify_session_payment`` runs all nine post-payment gates
+       (G_NO_REFUND, G_NOT_EXPIRED, G_SINGLE_CANDIDATE, ...) before finalizing
+       the identical action — same money movement, same ledger row, same
+       ``_finalize_capture`` call, but reachable through a second channel with
+       none of that gating. A payment that a browser-driven verify call would
+       have blocked (refunded, or past ``DEFAULT_AUTHORIZATION_TTL``) could
+       still be captured here if the webhook happened to win the race. Now
+       builds the same ``PostPaymentEvidence`` and runs the same gates.
     """
     raw_body = await request.body()
     signature = request.headers.get("x-razorpay-signature", "")
@@ -1318,22 +1400,69 @@ async def razorpay_webhook(request: Request) -> dict:
     if event is None:
         raise HTTPException(status_code=400, detail="payload could not be parsed as a payment event")
 
-    if not claim_delivery(WEBHOOK_LOG, event_id, event.event_type):
-        # Razorpay's own docs: duplicate deliveries and out-of-order arrival
-        # are expected, not exceptional. A repeat of an already-processed
-        # event is a routine acknowledgement, not a failure.
-        return {"ok": True, "note": "duplicate delivery, already processed"}
-
     if event.event_type != "payment.captured":
+        # Nothing this handler ever acts on for any other event type -- safe
+        # to record as seen for observability without risking the discard
+        # bug above, since there is no action here that a lost claim could
+        # ever prevent.
+        claim_delivery(WEBHOOK_LOG, event_id, event.event_type)
         return {"ok": True, "note": f"no action taken for {event.event_type}"}
 
     ledger_entry = get_entry_by_order_id(LEDGER, event.order_id)
     if ledger_entry is None:
+        # Deliberately NOT claimed yet -- see this function's docstring.
+        # Razorpay's own retry of this same event_id must still reach this
+        # exact check again once create_payment_order attaches the order id.
         raise HTTPException(status_code=404, detail="event does not correlate to a known transaction")
     if ledger_entry.status is LedgerStatus.CAPTURED:
         return {"ok": True, "note": "already captured"}
 
     session = _find_session_by_order_id(event.order_id)
+    # Mirrors verify_session_payment's own fallback exactly: no live
+    # in-memory authorization to check (a restarted process, or a webhook
+    # racing ahead of the session ever being touched again) is treated as
+    # "nothing to expire", same leniency the browser path already has. When
+    # a session genuinely exists but its authorization has outlived
+    # DEFAULT_AUTHORIZATION_TTL, the ledger row's own age is the fallback
+    # clock -- the same horizon G_AUTHORIZATION_FRESH already enforces
+    # pre-payment (D-035), applied here since no Authorization object is
+    # guaranteed to exist on this channel.
+    if session is not None and session.authorization is not None:
+        not_expired = not is_expired(session.authorization)
+    else:
+        # ledger_entry.created_at round-trips through SQLite naive even
+        # though ledger.py's _now() stores it timezone-aware (same quirk
+        # capability.py's own docstring documents) -- normalize both sides
+        # to naive UTC rather than assume either one.
+        created_at = ledger_entry.created_at
+        if created_at.tzinfo is not None:
+            created_at = created_at.astimezone(timezone.utc).replace(tzinfo=None)
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        not_expired = (now_naive - created_at) <= DEFAULT_AUTHORIZATION_TTL
+
+    post_evidence = PostPaymentEvidence(
+        payment_captured=event.status == "captured",
+        amount_match=event.amount_paise == ledger_entry.expected_amount_paise,
+        currency_match=event.currency.upper() == ledger_entry.currency.upper(),
+        correlation=True,   # event.order_id IS the lookup key that found ledger_entry
+        no_refund=event.amount_refunded_paise == 0,
+        single_candidate=True,   # this handler performs no ambiguous receipt lookup
+        order_repairable=True,   # ledger_entry.razorpay_order_id is already known-good
+        not_expired=not_expired,
+        no_prior_effect=ledger_entry.status is not LedgerStatus.CAPTURED,
+    )
+    post_gates = evaluate_post_payment_gates(post_evidence)
+    if not post_gates.allow:
+        reasons = "; ".join(post_gates.reasons[name] for name in post_gates.failed)
+        reject_ledger_entry(LEDGER, ledger_entry.idempotency_key, f"webhook post-payment gate failed: {reasons}")
+        raise HTTPException(status_code=400, detail=reasons)
+
+    if not claim_delivery(WEBHOOK_LOG, event_id, event.event_type):
+        # Razorpay's own docs: duplicate deliveries and out-of-order arrival
+        # are expected, not exceptional. A repeat of an already-processed,
+        # already-verified event is a routine acknowledgement, not a failure.
+        return {"ok": True, "note": "duplicate delivery, already processed"}
+
     if session is not None:
         _finalize_capture(
             session, _idempotency_key(session),

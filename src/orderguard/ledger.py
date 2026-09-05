@@ -26,10 +26,41 @@ one purchase.
 the row; every later call — whether it is a genuine retry, a duplicate webhook,
 or 70 identical requests fired at once — finds the row already resolved and is
 handed back the *original* result instead of writing anything.
+
+Real, found gap (not hypothetical): claiming the LEDGER ROW and claiming the
+right to actually CALL RAZORPAY were the same check for a while
+(``entry.status is PENDING and not entry.razorpay_order_id``), and that check
+is not atomic — two concurrent calls for the identical idempotency key can
+both read "no order id yet" before either one finishes attaching it, and both
+go on to call Razorpay's create-order API, producing two real orders for one
+purchase. The UNIQUE constraint on ``idempotency_key`` only ever stopped a
+second *row*; it says nothing about a second network call against the same
+row. ``claim_order_creation`` closes this with its own atomic
+``UPDATE ... WHERE order_creation_claimed_at IS NULL``, exactly the same
+database-as-referee pattern as everything else here: exactly one caller's
+UPDATE can match that WHERE clause, so exactly one caller may ever attempt
+the Razorpay call for a given key at a time.
+
+Real, found gap, same shape as ``capability.py``'s own documented one: every
+function below shares ``db.py::make_engine``'s SQLite path, which for
+``:memory:`` (tests, and any deploy with no DATABASE_URL) is one single
+``StaticPool`` connection for the whole process. Proving a WHERE clause is
+atomic at the SQL level does not make it safe for two real OS threads to
+call ``execute()``/``commit()`` on that ONE shared connection object at the
+same instant — Python's ``sqlite3`` driver raises
+``sqlite3.InterfaceError: bad parameter or other API misuse`` under exactly
+that load, found here the same way ``capability.py`` found it: a genuine
+multi-threaded test, not a sequential one. Fixed the same way, for the same
+reason: a module-level ``threading.Lock`` around every function that touches
+the engine, so concurrent callers queue at the Python level instead of
+colliding on the driver. Postgres (DATABASE_URL set) does not need this —
+each caller gets its own pooled connection — but the lock is harmless there
+too, and this module must work correctly in both configurations.
 """
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
@@ -40,10 +71,15 @@ from sqlmodel import Field, Session, SQLModel, select
 
 from .db import make_engine
 
+# See this module's docstring: guards every function below against genuine
+# concurrent access to the one shared SQLite connection object a `:memory:`
+# or file-based StaticPool engine hands out.
+_LEDGER_LOCK = threading.Lock()
+
 __all__ = [
     "LedgerStatus", "LedgerEntry", "ledger_engine",
-    "claim_order", "finalize_if_pending", "reject", "get_entry",
-    "get_entry_by_order_id", "mark_unknown", "resolve_unknown",
+    "claim_order", "claim_order_creation", "finalize_if_pending", "reject",
+    "get_entry", "get_entry_by_order_id", "mark_unknown", "resolve_unknown",
 ]
 
 _DEFAULT_PATH = Path("data/ledger.db")
@@ -88,6 +124,14 @@ class LedgerEntry(SQLModel, table=True):
     captured_amount_paise: int | None = None
     last_rejection_reason: str = ""
 
+    # Set exactly once, atomically, by whichever caller wins the right to
+    # actually call Razorpay's create-order API for this key — see
+    # claim_order_creation. Separate from razorpay_order_id: that field is
+    # only set once the call SUCCEEDS, but the claim must be held for the
+    # whole in-flight window, including the network round trip, or a second
+    # caller reading "no order id yet" would call Razorpay too.
+    order_creation_claimed_at: datetime | None = None
+
     created_at: datetime = Field(default_factory=_now)
     resolved_at: datetime | None = None
 
@@ -116,7 +160,7 @@ def claim_order(
     already exists, including any ``razorpay_order_id`` already stored on it,
     and must not create a second order.
     """
-    with Session(engine) as db:
+    with _LEDGER_LOCK, Session(engine) as db:
         entry = LedgerEntry(
             idempotency_key=idempotency_key, merchant=merchant,
             purchase_intent_id=purchase_intent_id, cart_hash=cart_hash,
@@ -139,13 +183,35 @@ def claim_order(
 
 def attach_order(engine: Engine, idempotency_key: str, razorpay_order_id: str) -> None:
     """Record the Razorpay order id on the row the winning caller just claimed."""
-    with Session(engine) as db:
+    with _LEDGER_LOCK, Session(engine) as db:
         db.exec(
             update(LedgerEntry)
             .where(LedgerEntry.idempotency_key == idempotency_key)
             .values(razorpay_order_id=razorpay_order_id)
         )
         db.commit()
+
+
+def claim_order_creation(engine: Engine, idempotency_key: str) -> bool:
+    """True for exactly one caller among any number racing here for the same
+    key — that caller, and only that caller, may call Razorpay's create-order
+    API. Every other caller must not call it; it should instead wait for (or
+    read back) the winner's result.
+
+    Atomic for the same reason ``finalize_if_pending`` is: the WHERE clause,
+    not an application-level read-then-write, decides who wins.
+    """
+    with _LEDGER_LOCK, Session(engine) as db:
+        result = db.exec(
+            update(LedgerEntry)
+            .where(
+                LedgerEntry.idempotency_key == idempotency_key,
+                LedgerEntry.order_creation_claimed_at.is_(None),
+            )
+            .values(order_creation_claimed_at=_now())
+        )
+        db.commit()
+        return result.rowcount == 1
 
 
 def finalize_if_pending(
@@ -168,7 +234,7 @@ def finalize_if_pending(
     executes writes one at a time, so exactly one UPDATE statement can match
     that WHERE clause before the status changes under it.
     """
-    with Session(engine) as db:
+    with _LEDGER_LOCK, Session(engine) as db:
         result = db.exec(
             update(LedgerEntry)
             .where(
@@ -201,7 +267,7 @@ def reject(engine: Engine, idempotency_key: str, reason: str) -> None:
     prevent a later attempt, with the correct payment id and signature, from
     still succeeding.
     """
-    with Session(engine) as db:
+    with _LEDGER_LOCK, Session(engine) as db:
         db.exec(
             update(LedgerEntry)
             .where(
@@ -214,7 +280,7 @@ def reject(engine: Engine, idempotency_key: str, reason: str) -> None:
 
 
 def get_entry(engine: Engine, idempotency_key: str) -> LedgerEntry | None:
-    with Session(engine) as db:
+    with _LEDGER_LOCK, Session(engine) as db:
         return db.exec(
             select(LedgerEntry).where(LedgerEntry.idempotency_key == idempotency_key)
         ).first()
@@ -223,7 +289,7 @@ def get_entry(engine: Engine, idempotency_key: str) -> LedgerEntry | None:
 def get_entry_by_order_id(engine: Engine, razorpay_order_id: str) -> LedgerEntry | None:
     """The lookup a webhook needs: it knows Razorpay's order id, not our
     idempotency key."""
-    with Session(engine) as db:
+    with _LEDGER_LOCK, Session(engine) as db:
         return db.exec(
             select(LedgerEntry).where(LedgerEntry.razorpay_order_id == razorpay_order_id)
         ).first()
@@ -234,7 +300,7 @@ def mark_unknown(engine: Engine, idempotency_key: str) -> None:
     clean success or a clean 4xx refusal, only after a timeout or dropped
     connection where Razorpay's own state is genuinely unknown to us.
     """
-    with Session(engine) as db:
+    with _LEDGER_LOCK, Session(engine) as db:
         db.exec(
             update(LedgerEntry)
             .where(
@@ -253,13 +319,17 @@ def resolve_unknown(
     row. ``razorpay_order_id`` given means the order WAS created despite the
     lost response — attach it and return to PENDING, the same state a normal
     successful create_order call leaves behind. ``None`` means Razorpay has no
-    record of it — also PENDING, but with no order attached, so the next
-    payment/order call is free to actually create one.
+    record of it — also PENDING, and the earlier order-creation claim is
+    released too, so a genuine retry is free to attempt the Razorpay call
+    again instead of being permanently locked out by a claim now known to
+    have failed.
     """
-    with Session(engine) as db:
+    with _LEDGER_LOCK, Session(engine) as db:
         values: dict = {"status": LedgerStatus.PENDING}
         if razorpay_order_id:
             values["razorpay_order_id"] = razorpay_order_id
+        else:
+            values["order_creation_claimed_at"] = None
         db.exec(
             update(LedgerEntry)
             .where(

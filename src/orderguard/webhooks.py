@@ -15,6 +15,13 @@ would be a self-inflicted false positive. Only three things are actually
 rejected: an invalid signature, a payload that cannot be parsed into a real
 payment event, or an event whose order id correlates to nothing this project
 knows about.
+
+Same shared-SQLite-connection gap as ``ledger.py`` and ``capability.py``
+(see their docstrings): ``claim_delivery`` writes through the same
+``db.py::make_engine`` path, which for ``:memory:``/file SQLite is one
+``StaticPool`` connection for the whole process — unsafe for two real OS
+threads to call ``commit()`` on at the same instant. Guarded the same way,
+for the same reason.
 """
 
 from __future__ import annotations
@@ -22,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +39,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Field, Session, SQLModel
 
 from .db import make_engine
+
+_WEBHOOK_LOCK = threading.Lock()
 
 __all__ = [
     "PaymentEvent", "verify_webhook_signature", "parse_payment_event",
@@ -61,6 +71,10 @@ class PaymentEvent(BaseModel):
     status: str
     amount_paise: int
     currency: str
+    # Additive, same reason payment.py::VerifiedPayment carries it: needed
+    # for G_NO_REFUND without a second network call, since the webhook body
+    # already has it.
+    amount_refunded_paise: int = 0
 
 
 def verify_webhook_signature(raw_body: bytes, signature: str, webhook_secret: str) -> bool:
@@ -93,6 +107,7 @@ def parse_payment_event(raw_body: bytes) -> PaymentEvent | None:
     if not isinstance(amount, int) or isinstance(amount, bool):
         return None
 
+    refunded = entity.get("amount_refunded")
     return PaymentEvent(
         event_type=str(body.get("event") or ""),
         payment_id=str(entity["id"]),
@@ -100,6 +115,7 @@ def parse_payment_event(raw_body: bytes) -> PaymentEvent | None:
         status=str(entity.get("status") or ""),
         amount_paise=amount,
         currency=str(entity.get("currency") or ""),
+        amount_refunded_paise=refunded if isinstance(refunded, int) and not isinstance(refunded, bool) else 0,
     )
 
 
@@ -125,7 +141,7 @@ def claim_delivery(engine: Engine, event_id: str, event_type: str) -> bool:
     """True the first time this exact delivery is seen — the caller should
     actually act on the event. False means a duplicate: acknowledge it as a
     routine no-op, never as an error."""
-    with Session(engine) as db:
+    with _WEBHOOK_LOCK, Session(engine) as db:
         db.add(WebhookDelivery(event_id=event_id, event_type=event_type))
         try:
             db.commit()

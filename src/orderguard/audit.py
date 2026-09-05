@@ -24,12 +24,23 @@ disagree with the hash recomputed from its own content, and every event
 after it inherits the mismatch through ``prev_hash``. That is a real,
 checkable property. Claiming more than that would be exactly the kind of
 overclaim this project argues against.
+
+Same shared-SQLite-connection gap as ``ledger.py``/``capability.py`` (see
+their docstrings): every append runs through ``db.py::make_engine``'s one
+``StaticPool`` connection for ``:memory:``/file SQLite, unsafe for two real
+OS threads to call ``commit()`` on at the same instant. The retry loop below
+already makes the CHAIN itself correct under a lost ``seq`` race (a real
+UNIQUE-constraint collision just re-reads and retries); the lock closes the
+separate, lower-level driver hazard, the same way it does everywhere else in
+this codebase. This chain is written on every gate evaluation on the money
+path, so it is exercised under real concurrent load the same as the ledger.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,6 +49,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlmodel import Field, Session, SQLModel, select
 
 from .db import make_engine
+
+_AUDIT_LOCK = threading.Lock()
 
 __all__ = [
     "AuditEvent", "ChainTampered", "audit_engine",
@@ -112,7 +125,7 @@ def append_event(engine: Engine, event_type: str, payload: dict) -> AuditEvent:
     silently overwriting or crashing on a transient collision.
     """
     payload_json = canonical_json(payload)
-    with Session(engine) as db:
+    with _AUDIT_LOCK, Session(engine) as db:
         for _ in range(_APPEND_RETRIES):
             last = db.exec(select(AuditEvent).order_by(AuditEvent.seq.desc())).first()
             seq = 0 if last is None else last.seq + 1
@@ -141,7 +154,7 @@ def verify_chain(engine: Engine) -> list[AuditEvent]:
     its stored ``payload_json``. Nothing here trusts the stored hash on its
     own; every hash is recomputed independently before being believed.
     """
-    with Session(engine) as db:
+    with _AUDIT_LOCK, Session(engine) as db:
         events = list(db.exec(select(AuditEvent).order_by(AuditEvent.seq)))
 
     expected_prev: str | None = None

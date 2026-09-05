@@ -27,10 +27,18 @@ not changed since a holder of the private key produced it. It says nothing
 about whether the private key itself has been compromised — that is a key-
 management problem, not a cryptography problem, and out of scope for what
 this artifact claims to prove.
+
+Same shared-SQLite-connection gap as ``ledger.py``/``capability.py`` (see
+their docstrings): ``consume_authorization`` is the same
+INSERT-then-catch-``IntegrityError`` single-use pattern as
+``ledger.claim_order``, running through the same one-connection SQLite
+engine for ``:memory:``/file databases — unsafe under two real concurrent
+callers for the identical reason. Guarded the same way.
 """
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -58,6 +66,7 @@ __all__ = [
 
 STRICT = ConfigDict(extra="forbid", frozen=True)
 _DEFAULT_DB_PATH = Path("data/authorization.db")
+_AUTH_LOCK = threading.Lock()
 
 
 def _now() -> datetime:
@@ -113,7 +122,7 @@ class SigningKeyRecord(SQLModel, table=True):
 def load_or_create_signing_key(engine: Engine) -> Ed25519PrivateKey:
     """One key per deployment, generated on first use, never regenerated
     silently afterward — a receipt signed yesterday must still verify today."""
-    with Session(engine) as db:
+    with _AUTH_LOCK, Session(engine) as db:
         row = db.exec(select(SigningKeyRecord)).first()
         if row is not None:
             return serialization.load_pem_private_key(row.pem.encode(), password=None)
@@ -193,7 +202,7 @@ def consume_authorization(
     consumed this authorization; every later call, however many times it is
     retried, gets back the ORIGINAL consumption record untouched.
     """
-    with Session(engine) as db:
+    with _AUTH_LOCK, Session(engine) as db:
         entry = AuthorizationConsumption(
             authorization_id=authorization_id, razorpay_order_id=razorpay_order_id,
             audit_event_id=audit_event_id,
@@ -213,7 +222,7 @@ def consume_authorization(
 
 
 def get_consumption(engine: Engine, authorization_id: str) -> AuthorizationConsumption | None:
-    with Session(engine) as db:
+    with _AUTH_LOCK, Session(engine) as db:
         return db.exec(
             select(AuthorizationConsumption)
             .where(AuthorizationConsumption.authorization_id == authorization_id)

@@ -11,8 +11,11 @@ like the real API for exactly the calls this code makes; ``verify_payment``
 itself is the real function, computing and checking a real HMAC signature.
 """
 
+import asyncio
 import hashlib
 import hmac
+import threading
+from datetime import datetime, timezone
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -542,13 +545,16 @@ def test_a_payment_for_the_wrong_amount_is_rejected(client, monkeypatch):
 
 # --- the Razorpay webhook: server-to-server payment truth -------------------
 
-def _webhook_body(order_id, payment_id, amount, event="payment.captured", currency="INR") -> bytes:
+def _webhook_body(
+    order_id, payment_id, amount, event="payment.captured", currency="INR",
+    amount_refunded=0, status="captured",
+) -> bytes:
     import json
     return json.dumps({
         "entity": "event", "event": event,
         "payload": {"payment": {"entity": {
-            "id": payment_id, "order_id": order_id, "status": "captured",
-            "amount": amount, "currency": currency,
+            "id": payment_id, "order_id": order_id, "status": status,
+            "amount": amount, "currency": currency, "amount_refunded": amount_refunded,
         }}},
     }).encode()
 
@@ -607,7 +613,11 @@ def test_a_duplicate_delivery_is_a_no_op_not_an_error(client):
 
     assert first.status_code == 200
     assert second.status_code == 200
-    assert "duplicate" in second.json()["note"]
+    # "already captured" (checked before claim_delivery now -- see the
+    # reordering fix) is just as much a clean no-op as "duplicate delivery"
+    # was; either wording means the same event was never double-processed.
+    assert "already captured" in second.json().get("note", "") or \
+        "duplicate" in second.json().get("note", "")
 
     from orderguard.app import MEMORY
     assert len(recent_orders(MEMORY, "buyer1")) == 1   # side effects still ran only once
@@ -654,3 +664,182 @@ def test_a_non_payment_event_is_acknowledged_without_action(client):
     })
     assert response.status_code == 200
     assert "no action taken" in response.json()["note"]
+
+
+# --- real, found gap: a webhook amount/currency mismatch was never checked --
+
+def test_a_webhook_with_a_mismatched_amount_is_rejected_not_finalized(client):
+    """Regression: this handler used to finalize on event.amount_paise with
+    zero comparison to the confirmed cart -- the exact check the browser
+    verify path already enforces. A signature only proves Razorpay sent it,
+    not that it matches THIS purchase."""
+    session_id = _confirmed_session(client)
+    order = client.post(f"/api/sessions/{session_id}/payment/order").json()
+    body = _webhook_body(order["razorpay_order_id"], "pay_wrong_amount", 100)   # real total is 13200
+
+    response = client.post("/api/webhooks/razorpay", content=body, headers={
+        "x-razorpay-signature": _webhook_signature(body), "x-razorpay-event-id": "evt_bad_amount",
+    })
+    assert response.status_code == 400
+
+    from orderguard.app import LEDGER, MEMORY
+    session = app_module._SESSIONS[session_id]
+    key = f"{session.intent.merchant}|{session.intent.intent_id}|purchase|{session.intent.confirmed_cart_hash}"
+    entry = get_entry(LEDGER, key)
+    assert entry.status is LedgerStatus.PENDING   # never captured on the mismatched claim
+    assert recent_orders(MEMORY, "buyer1") == []
+
+
+def test_a_webhook_with_a_mismatched_currency_is_rejected(client):
+    session_id = _confirmed_session(client)
+    order = client.post(f"/api/sessions/{session_id}/payment/order").json()
+    body = _webhook_body(order["razorpay_order_id"], "pay_wrong_ccy", 13200, currency="USD")
+
+    response = client.post("/api/webhooks/razorpay", content=body, headers={
+        "x-razorpay-signature": _webhook_signature(body), "x-razorpay-event-id": "evt_bad_ccy",
+    })
+    assert response.status_code == 400
+
+
+# --- real, found gap: the webhook path never ran the 9 post-payment gates --
+
+def test_a_webhook_reporting_a_refund_is_not_captured(client):
+    """Regression: this handler used to call _finalize_capture directly with
+    no post-payment gates at all -- G_NO_REFUND, enforced on the browser
+    path, was silently absent here. A payment reported already-refunded in
+    the same webhook body must not be captured through this channel either."""
+    session_id = _confirmed_session(client)
+    order = client.post(f"/api/sessions/{session_id}/payment/order").json()
+    body = _webhook_body(order["razorpay_order_id"], "pay_refunded_wh", 13200, amount_refunded=13200)
+
+    response = client.post("/api/webhooks/razorpay", content=body, headers={
+        "x-razorpay-signature": _webhook_signature(body), "x-razorpay-event-id": "evt_refunded",
+    })
+    assert response.status_code == 400
+    assert "refund" in response.json()["detail"].lower()
+
+    from orderguard.app import LEDGER, MEMORY
+    session = app_module._SESSIONS[session_id]
+    key = f"{session.intent.merchant}|{session.intent.intent_id}|purchase|{session.intent.confirmed_cart_hash}"
+    assert get_entry(LEDGER, key).status is not LedgerStatus.CAPTURED
+    assert recent_orders(MEMORY, "buyer1") == []
+
+
+def test_a_webhook_arriving_after_the_authorization_window_is_not_captured(client, monkeypatch):
+    """Regression, same gap: G_NOT_EXPIRED (D-035's freshness horizon) was
+    never checked on the webhook channel. A webhook landing long after the
+    purchase was confirmed must be refused here exactly as the browser path
+    already refuses it."""
+    session_id = _confirmed_session(client)
+    order = client.post(f"/api/sessions/{session_id}/payment/order").json()
+
+    # No live in-memory authorization on this channel (see the handler's own
+    # fallback) -- push the ledger row's own created_at back past the TTL so
+    # the fallback clock catches it.
+    from datetime import timedelta
+    import orderguard.app as app_mod
+    from orderguard.ledger import LedgerEntry
+    from sqlmodel import Session, update
+    session = app_mod._SESSIONS[session_id]
+    key = f"{session.intent.merchant}|{session.intent.intent_id}|purchase|{session.intent.confirmed_cart_hash}"
+    stale = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=30)
+    with Session(app_mod.LEDGER) as db:
+        db.exec(update(LedgerEntry).where(LedgerEntry.idempotency_key == key).values(created_at=stale))
+        db.commit()
+    app_mod._SESSIONS.pop(session_id)   # force the "no live session" fallback path
+
+    body = _webhook_body(order["razorpay_order_id"], "pay_stale_wh", 13200)
+    response = client.post("/api/webhooks/razorpay", content=body, headers={
+        "x-razorpay-signature": _webhook_signature(body), "x-razorpay-event-id": "evt_stale",
+    })
+    assert response.status_code == 400
+
+    from orderguard.ledger import get_entry
+    assert get_entry(app_mod.LEDGER, key).status is not LedgerStatus.CAPTURED
+
+
+def test_an_early_webhook_before_the_order_is_attached_can_still_succeed_on_retry(client):
+    """Regression: claim_delivery used to run BEFORE checking whether the
+    event correlates to a known transaction. A webhook racing ahead of
+    create_payment_order got 404'd AND marked processed in the same call, so
+    Razorpay's retry of that exact event_id was later swallowed as a
+    duplicate no-op forever -- the capture was permanently lost. It must not
+    be marked processed until the transaction is actually known and
+    verified."""
+    body = _webhook_body("order_not_created_yet", "pay_early", 13200)
+    headers = {"x-razorpay-signature": _webhook_signature(body), "x-razorpay-event-id": "evt_early"}
+
+    first = client.post("/api/webhooks/razorpay", content=body, headers=headers)
+    assert first.status_code == 404
+
+    # the order now gets created for real, with the SAME order id the early
+    # webhook already named
+    import orderguard.app as app_mod
+    from orderguard.ledger import attach_order
+    session_id = _confirmed_session(client)
+    session = app_mod._SESSIONS[session_id]
+    key = f"{session.intent.merchant}|{session.intent.intent_id}|purchase|{session.intent.confirmed_cart_hash}"
+    from orderguard.ledger import claim_order
+    claim_order(
+        app_mod.LEDGER, idempotency_key=key, merchant=session.intent.merchant,
+        purchase_intent_id=session.intent.intent_id,
+        cart_hash=session.intent.confirmed_cart_hash or "",
+        expected_amount_paise=13200, currency="INR",
+    )
+    attach_order(app_mod.LEDGER, key, "order_not_created_yet")
+
+    # Razorpay's real retry behaviour: the identical event_id, delivered again
+    retry = client.post("/api/webhooks/razorpay", content=body, headers=headers)
+    assert retry.status_code == 200
+    assert "duplicate" not in retry.json().get("note", "")
+
+    from orderguard.ledger import get_entry
+    entry = get_entry(app_mod.LEDGER, key)
+    assert entry.status is LedgerStatus.CAPTURED   # the retry actually finalized it
+
+
+# --- real, found gap: two concurrent order calls could both call Razorpay ---
+
+class _SlowFakeClient(_FakeRazorpayClient):
+    """Sleeps mid-call so two concurrent requests genuinely overlap inside
+    the await point, the same window the real race lived in."""
+
+    async def create_order(self, *, amount_paise, currency, receipt, notes):
+        await asyncio.sleep(0.2)
+        return await super().create_order(
+            amount_paise=amount_paise, currency=currency, receipt=receipt, notes=notes,
+        )
+
+
+def test_concurrent_order_calls_for_the_same_session_never_call_razorpay_twice(client, monkeypatch):
+    """Regression: `created or (PENDING and no order id yet)` was not atomic
+    -- two concurrent calls for the same idempotency key could both read "no
+    order id yet" and both call Razorpay. claim_order_creation closes this;
+    prove it under a genuine concurrent race, not a sequential retry."""
+    monkeypatch.setattr(executor, "RazorpayClient", _SlowFakeClient)
+    _SlowFakeClient.create_calls = 0
+    session_id = _confirmed_session(client)
+
+    results = []
+
+    def _call():
+        results.append(client.post(f"/api/sessions/{session_id}/payment/order"))
+
+    threads = [threading.Thread(target=_call) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert _SlowFakeClient.create_calls == 1, (
+        f"Razorpay's create-order API was called {_SlowFakeClient.create_calls} "
+        "times for one purchase; it must be called exactly once"
+    )
+    succeeded = [r for r in results if r.status_code == 200]
+    assert len(succeeded) >= 1
+    order_ids = {r.json()["razorpay_order_id"] for r in succeeded}
+    assert order_ids == {FAKE_ORDER_ID}
+    # every response either succeeded with the one real order, or was told to
+    # retry -- never a second, different order
+    for r in results:
+        assert r.status_code in (200, 409), r.text
