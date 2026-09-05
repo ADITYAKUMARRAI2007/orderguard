@@ -4,9 +4,8 @@
 
 > The agent can be wrong. The execution cannot be unproven.
 
-**Live**: [orderguard-frontend.onrender.com](https://orderguard-frontend.onrender.com) ·
-[frontend-kappa-rouge-88.vercel.app](https://frontend-kappa-rouge-88.vercel.app)
-(same backend, two frontend hosts — see [Deploy](#deploy)) · backend:
+**Live**:[frontend-kappa-rouge-88.vercel.app](https://frontend-kappa-rouge-88.vercel.app)
+ . backend:
 [orderguard-backend-9191.onrender.com](https://orderguard-backend-9191.onrender.com)
 
 OrderGuard is a deterministic financial-authorization boundary around a
