@@ -5,8 +5,10 @@
 *.key
 *.pem
 
-# local tooling
+# local tooling — editor/CLI configs unrelated to this project's own code
 .claude/settings.local.json
+.codex/
+.hypothesis/
 
 # python
 __pycache__/

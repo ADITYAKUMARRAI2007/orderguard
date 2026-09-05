@@ -19,7 +19,7 @@ export default defineConfig({
     include: ["react", "react-dom", "three"],
   },
   server: {
-    port: 5173,
+    port: Number(process.env.PORT) || 5173,
     proxy: {
       // The real, already-tested FastAPI backend (src/orderguard/app.py).
       // No backend changes for this frontend rewrite — same REST contract
