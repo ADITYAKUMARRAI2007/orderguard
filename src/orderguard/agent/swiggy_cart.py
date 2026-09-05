@@ -61,6 +61,7 @@ anyway.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from dataclasses import dataclass
 
@@ -177,33 +178,57 @@ async def add_to_instamart_cart(
     # update_cart returning without an error is not proof anything actually
     # landed -- see this module's docstring. Read the real cart back,
     # independently, before ever telling the caller it worked.
-    try:
-        confirmed = await call_tool_directly(
-            url=_URL, bearer_token=bearer_token, tool_name="get_cart", arguments={},
+    #
+    # Real, reproduced incident (2026-09-05): update_cart's OWN reply
+    # claimed all four items were saved, but an independent get_cart called
+    # moments later showed a completely different, smaller cart that didn't
+    # even contain the items just sent -- Swiggy's write path and read path
+    # disagreeing with each other, not a rejection either one reported. A
+    # second, later read-back sometimes shows the write settling correctly
+    # (confirmed live: two back-to-back writes against a fresh token both
+    # landed and read back correctly seconds apart), so one retry after a
+    # short delay is a real, evidenced mitigation for propagation lag --
+    # not a guess -- before this function gives up and reports failure.
+    confirmed: dict | None = None
+    landed = False
+    lost: list[str] = []
+    attempts_left = 2
+    while True:
+        attempts_left -= 1
+        try:
+            confirmed = await call_tool_directly(
+                url=_URL, bearer_token=bearer_token, tool_name="get_cart", arguments={},
+            )
+        except DirectMcpCallError as exc:
+            if attempts_left > 0:
+                await asyncio.sleep(2.0)
+                continue
+            _log_write_evidence(current, write_arguments, write_reply, None)
+            raise SwiggyCartError(
+                f"update_cart returned no error, but the real cart could not be "
+                f"read back to confirm it: {exc}"
+            ) from exc
+
+        confirmed_items = (confirmed or {}).get("items", [])
+        landed = any(
+            item.get("spinId") == spin_id and item.get("quantity") == quantity
+            for item in confirmed_items
         )
-    except DirectMcpCallError as exc:
-        _log_write_evidence(current, write_arguments, write_reply, None)
-        raise SwiggyCartError(
-            f"update_cart returned no error, but the real cart could not be "
-            f"read back to confirm it: {exc}"
-        ) from exc
+        # A write that fails does not politely leave the rest of the cart
+        # alone. Swiggy's own reply to a write containing one unsellable
+        # item, captured live in F-036, is "no valid items remained, so the
+        # cart is now empty" -- it drops the invalid item AND everything
+        # that was already there. Items this write was supposed to be
+        # PRESERVING can therefore be destroyed by it, silently, which is
+        # exactly what a user sees as "the things I added earlier
+        # disappeared." Checked explicitly, and reported, rather than left
+        # for the user to discover on the merchant's own site.
+        confirmed_spins = {item.get("spinId") for item in confirmed_items}
+        lost = [item.spin_id for item in existing if item.spin_id not in confirmed_spins]
 
-    confirmed_items = (confirmed or {}).get("items", [])
-    landed = any(
-        item.get("spinId") == spin_id and item.get("quantity") == quantity
-        for item in confirmed_items
-    )
-
-    # A write that fails does not politely leave the rest of the cart alone.
-    # Swiggy's own reply to a write containing one unsellable item, captured
-    # live in F-036, is "no valid items remained, so the cart is now empty" —
-    # it drops the invalid item AND everything that was already there. Items
-    # this write was supposed to be PRESERVING can therefore be destroyed by
-    # it, silently, which is exactly what a user sees as "the things I added
-    # earlier disappeared." Checked explicitly, and reported, rather than
-    # left for the user to discover on the merchant's own site.
-    confirmed_spins = {item.get("spinId") for item in confirmed_items}
-    lost = [item.spin_id for item in existing if item.spin_id not in confirmed_spins]
+        if (landed and not lost) or attempts_left <= 0:
+            break
+        await asyncio.sleep(2.0)
 
     if not landed or lost:
         _log_write_evidence(current, write_arguments, write_reply, confirmed)

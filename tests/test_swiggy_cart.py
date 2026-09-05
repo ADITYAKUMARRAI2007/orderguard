@@ -15,6 +15,15 @@ from orderguard.agent.mcp_direct_client import DirectMcpCallError
 from orderguard.agent.swiggy_cart import SwiggyCartError, add_to_instamart_cart
 
 
+@pytest.fixture(autouse=True)
+def _no_real_delay_between_retries():
+    """The read-back retry's delay is a real, deliberate wait for Swiggy's
+    own eventual consistency in production -- nothing this suite should
+    ever sit through for real. Patched to instant everywhere in this file."""
+    with patch("orderguard.agent.swiggy_cart.asyncio.sleep", AsyncMock(return_value=None)):
+        yield
+
+
 def _stateful_server(initial_items: list[dict]) -> tuple[dict, object]:
     """A minimal fake Swiggy backend: get_cart returns whatever the last
     update_cart actually wrote, so a post-write read-back genuinely
@@ -244,6 +253,31 @@ async def test_update_cart_reporting_no_error_but_the_item_never_landing_fails_c
     with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
         with pytest.raises(SwiggyCartError, match="not actually in the real cart"):
             await add_to_instamart_cart(bearer_token="tok", address_id="a1", spin_id="S1", quantity=1)
+
+
+async def test_a_read_back_that_only_settles_on_the_second_try_still_succeeds():
+    """Real, reproduced incident (2026-09-05): update_cart's own reply
+    claimed an item landed, but the FIRST independent get_cart read-back
+    afterward showed a stale, unrelated cart snapshot -- then a second
+    read-back (confirmed live, real API) showed the write correctly
+    settled. One retry after a short delay is a real, evidenced mitigation
+    for this kind of propagation lag, not a guess."""
+    calls = {"get_cart": 0}
+
+    async def fake_call(*, url, bearer_token, tool_name, arguments):
+        if tool_name == "get_cart":
+            calls["get_cart"] += 1
+            if calls["get_cart"] == 1:
+                return {"items": []}  # stale snapshot, doesn't reflect it yet
+            return {"items": [{"spinId": "S1", "quantity": 1}]}  # now settled
+        return {"written": arguments}
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
+        result = await add_to_instamart_cart(
+            bearer_token="tok", address_id="a1", spin_id="S1", quantity=1,
+        )
+    assert result["items_written"] == [{"spin_id": "S1", "quantity": 1}]
+    assert calls["get_cart"] == 2
 
 
 async def test_the_read_back_confirmation_call_itself_failing_fails_closed():
