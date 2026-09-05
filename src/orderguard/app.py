@@ -1880,6 +1880,10 @@ async def agent_run(request: AgentRunRequest) -> dict:
         })
         raise HTTPException(status_code=422, detail="connector result did not match its verified schema") from None
     except (IneligibleConnectorSelectionError, ConnectorProvenanceError) as exc:
+        # Same F-017 operator-only diagnostic pattern as ConnectorPayloadError
+        # above -- see the mission-run endpoint's identical except block for
+        # why this print exists.
+        print(f"[agent] {type(exc).__name__}: {exc}", file=sys.stderr)
         append_event(AUDIT, "connector_eligibility_vetoed", {
             "reason": str(exc),
         })
@@ -1993,6 +1997,13 @@ async def agent_mission_run(request: MissionRunRequest) -> dict:
         })
         raise HTTPException(status_code=422, detail="connector result did not match its verified schema") from None
     except (IneligibleConnectorSelectionError, ConnectorProvenanceError) as exc:
+        # Same F-017 operator-only diagnostic pattern as ConnectorPayloadError
+        # above: the audit event carries this too, but that requires querying
+        # the hash-chained log to read. A real, reproduced veto (2026-09-05,
+        # an image-attached mission whose text explicitly named a connector)
+        # needs the actual server_name the runtime selected to root-cause,
+        # not just "vetoed".
+        print(f"[agent] {type(exc).__name__}: {exc}", file=sys.stderr)
         append_event(AUDIT, "connector_eligibility_vetoed", {"reason": str(exc)})
         raise HTTPException(status_code=400, detail="runtime connector selection was vetoed") from None
     except CliManagedConnectorUnsupported as exc:
