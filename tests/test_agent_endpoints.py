@@ -467,6 +467,78 @@ def test_approve_cart_action_cannot_be_replayed_twice():
     assert second.status_code == 409
 
 
+def test_write_cart_sends_the_whole_cart_in_one_request_and_one_write():
+    """What the UI actually calls: one request carrying every selected item,
+    no per-product staging round trip, and exactly one real write behind
+    it. Each item still gets its own audit record, server-side, inside this
+    same request."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch.object(app_module.ACCOUNTS, "bearer_token", return_value="fake-token"), \
+         patch.object(
+             app_module, "add_items_to_instamart_cart",
+             new=AsyncMock(return_value={
+                 "items_written": [
+                     {"spin_id": "W-A", "quantity": 1}, {"spin_id": "W-B", "quantity": 3},
+                 ],
+                 "preserved_existing_items": 2, "cart_read_skipped_reason": None,
+             }),
+         ) as mock_write:
+        resp = client.post("/api/agent/cart-actions/write-cart", json={
+            "connector_id": "swiggy-instamart",
+            "address_id": "real-address",
+            "items": [
+                {"variant_id": "W-A", "quantity": 1, "offer_title": "A", "offer_price_minor": 100},
+                {"variant_id": "W-B", "quantity": 3, "offer_title": "B", "offer_price_minor": 200},
+            ],
+        })
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "SUCCEEDED"
+    assert body["checkout_url"] == "https://www.instamart.in/cart"
+    assert mock_write.call_count == 1  # ONE write for the whole cart
+    _args, kwargs = mock_write.call_args
+    assert {i.spin_id: i.quantity for i in kwargs["items"]} == {"W-A": 1, "W-B": 3}
+
+    # each item is still named individually in the audit chain
+    verify = client.get("/api/audit/verify").json()
+    assert verify["verified"] is True
+    approved = [e for e in verify["events"] if e["event_type"] == "cart_write_approved"]
+    assert approved, "the whole-cart write must still be recorded per item"
+
+
+def test_write_cart_hands_back_the_real_cart_url_when_the_write_cannot_verify():
+    from unittest.mock import AsyncMock, patch
+    from orderguard.agent.swiggy_cart import SwiggyCartError
+
+    with patch.object(app_module.ACCOUNTS, "bearer_token", return_value="fake-token"), \
+         patch.object(
+             app_module, "add_items_to_instamart_cart",
+             new=AsyncMock(side_effect=SwiggyCartError("items (X) not actually in the real cart")),
+         ):
+        resp = client.post("/api/agent/cart-actions/write-cart", json={
+            "connector_id": "swiggy-instamart", "address_id": "a1",
+            "items": [{"variant_id": "X", "quantity": 1, "offer_title": "X", "offer_price_minor": 10}],
+        })
+
+    assert resp.status_code == 502
+    assert resp.json()["detail"]["checkout_url"] == "https://www.instamart.in/cart"
+
+
+def test_write_cart_refuses_a_connector_with_no_cart_write_wired_up():
+    from unittest.mock import AsyncMock, patch
+
+    with patch.object(app_module, "add_items_to_instamart_cart", new=AsyncMock()) as mock_write:
+        resp = client.post("/api/agent/cart-actions/write-cart", json={
+            "connector_id": "github", "address_id": "a1",
+            "items": [{"variant_id": "X", "quantity": 1, "offer_title": "X", "offer_price_minor": 10}],
+        })
+
+    assert resp.status_code == 400
+    mock_write.assert_not_called()
+
+
 def test_approve_batch_writes_the_whole_staged_cart_in_one_call():
     """The real point: N proposals approved together must reach
     add_items_to_instamart_cart as ONE call carrying every item, never N

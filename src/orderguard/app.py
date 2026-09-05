@@ -2525,6 +2525,129 @@ async def approve_cart_action(proposal_id: str, request: ApproveCartActionReques
     }
 
 
+class WriteCartItemRequest(BaseModel):
+    model_config = STRICT
+    variant_id: str = Field(min_length=1, max_length=128)
+    quantity: int = Field(ge=1, le=50)
+    offer_title: str = Field(min_length=1, max_length=300)
+    offer_price_minor: int = Field(ge=0)
+
+
+class WriteCartRequest(BaseModel):
+    model_config = STRICT
+    connector_id: str = Field(min_length=1, max_length=64)
+    address_id: str = Field(min_length=1, max_length=64)
+    items: list[WriteCartItemRequest] = Field(min_length=1, max_length=50)
+
+
+@app.post("/api/agent/cart-actions/write-cart")
+async def write_cart(request: WriteCartRequest) -> dict:
+    """An entire selected cart, in ONE request and ONE real write.
+
+    Real, found gap: the UI used to stage each product separately — one
+    ``propose`` request per item, then a write — so "add these five things"
+    cost five staging round trips before anything happened, and (before the
+    batch write existed) five separate ``update_cart`` calls after it, each
+    one's pre-write read racing the previous one's still-settling write on
+    Swiggy's side (2026-09-06, see ``swiggy_cart.py``'s own docstring).
+
+    This endpoint is the whole flow: the caller sends the complete cart it
+    wants, every ``ActionProposal`` is recorded server-side in this same
+    request (the audit chain still names each item individually — that is a
+    record, not a prompt), and exactly one ``update_cart`` carries all of
+    them. One user action, one HTTP call, one real write.
+
+    Still not a payment: this only ever writes a cart, and checkout finishes
+    on the connector's own site via ``checkout_url``.
+    """
+    connector = agent_connector_by_id(request.connector_id)
+    tool = next((t for t in connector.tools if t.name == "update_cart"), None)
+    if tool is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{request.connector_id!r} has no cart-write tool registered",
+        )
+    if request.connector_id != "swiggy-instamart":
+        raise HTTPException(
+            status_code=400,
+            detail=f"no cart-write execution wired up for {request.connector_id!r}",
+        )
+
+    proposals: list[ActionProposal] = []
+    try:
+        for item in request.items:
+            proposal = ActionProposal(
+                proposal_id=uuid4().hex,
+                connector_id=request.connector_id,
+                capability=connector.category,
+                risk_tier=tool.risk_tier,
+                tool_name="update_cart",
+                arguments={"variant_id": item.variant_id, "quantity": item.quantity},
+                summary=f"Add {item.quantity} × {item.offer_title} "
+                        f"(₹{item.offer_price_minor / 100:.2f}) to your real {connector.label} cart.",
+            )
+            proposals.append(proposal)
+    except R3NeverEntersLifecycle as exc:
+        # Structurally unreachable today (update_cart is R1 in the registry),
+        # but the check stays live rather than trusted-by-construction.
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    for proposal in proposals:
+        proposal.status = next_status(proposal, user_approved=True)
+        save_proposal(CART_PROPOSALS_DB, proposal)
+    append_event(AUDIT, "cart_write_approved", {
+        "connector_id": request.connector_id,
+        "proposal_ids": [p.proposal_id for p in proposals],
+        "summaries": [p.summary for p in proposals],
+    })
+
+    token = ACCOUNTS.bearer_token(request.connector_id)
+    if not token:
+        for proposal in proposals:
+            proposal.status = "FAILED"
+            save_proposal(CART_PROPOSALS_DB, proposal)
+        raise HTTPException(status_code=409, detail=f"{request.connector_id!r} is not connected")
+
+    try:
+        result = await add_items_to_instamart_cart(
+            bearer_token=token, address_id=request.address_id,
+            items=[
+                CartItem(spin_id=item.variant_id, quantity=item.quantity)
+                for item in request.items
+            ],
+        )
+    except SwiggyCartError as exc:
+        for proposal in proposals:
+            proposal.status = "FAILED"
+            save_proposal(CART_PROPOSALS_DB, proposal)
+        append_event(AUDIT, "cart_write_failed", {
+            "connector_id": request.connector_id,
+            "proposal_ids": [p.proposal_id for p in proposals], "reason": str(exc),
+        })
+        raise HTTPException(
+            status_code=502,
+            detail={"message": str(exc), "checkout_url": connector.checkout_url},
+        ) from None
+
+    for proposal in proposals:
+        proposal.status = "SUCCEEDED"
+        save_proposal(CART_PROPOSALS_DB, proposal)
+    append_event(AUDIT, "cart_write_succeeded", {
+        "connector_id": request.connector_id,
+        "proposal_ids": [p.proposal_id for p in proposals],
+        "items_written": result["items_written"],
+        "preserved_existing_items": result["preserved_existing_items"],
+        "cart_read_skipped_reason": result["cart_read_skipped_reason"],
+    })
+    return {
+        "status": "SUCCEEDED",
+        "items_written": result["items_written"],
+        "preserved_existing_items": result["preserved_existing_items"],
+        "cart_read_skipped_reason": result["cart_read_skipped_reason"],
+        "checkout_url": connector.checkout_url,
+    }
+
+
 class ApproveCartActionBatchRequest(BaseModel):
     model_config = STRICT
     proposal_ids: list[str] = Field(min_length=1, max_length=50)

@@ -362,11 +362,32 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ address_id: addressId }),
     }),
-  // Writes every staged proposal in ONE update_cart call instead of one
-  // call per item — closes the race where one item's write could land
-  // mid-propagation of a PREVIOUS item's still-settling write (2026-09-06).
-  // Only proposals for the same connector may be batched; the backend
-  // refuses (400) rather than guessing if they differ.
+  // The whole selected cart, in ONE request and ONE real write. No
+  // per-product staging round trip: the backend records each item's
+  // ActionProposal (for the audit chain) inside this same request and
+  // writes them all with a single update_cart call.
+  writeCart: (params: {
+    connectorId: string;
+    addressId: string;
+    items: { variantId: string; quantity: number; offerTitle: string; offerPriceMinor: number }[];
+  }) =>
+    request<{
+      status: string; items_written: { spin_id: string; quantity: number }[];
+      preserved_existing_items: number; checkout_url: string;
+      cart_read_skipped_reason: string | null;
+    }>("/api/agent/cart-actions/write-cart", {
+      method: "POST",
+      body: JSON.stringify({
+        connector_id: params.connectorId,
+        address_id: params.addressId,
+        items: params.items.map((i) => ({
+          variant_id: i.variantId, quantity: i.quantity,
+          offer_title: i.offerTitle, offer_price_minor: i.offerPriceMinor,
+        })),
+      }),
+    }),
+  // Lower-level sibling of writeCart, for callers that already hold staged
+  // proposal ids. Same single-write guarantee.
   approveCartActionBatch: (proposalIds: string[], addressId: string) =>
     request<{
       status: string; items_written: { spin_id: string; quantity: number }[];

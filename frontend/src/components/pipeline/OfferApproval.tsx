@@ -4,32 +4,49 @@ import type { ConnectorResult, CouncilResult, ScoredOffer } from "@/lib/api";
 import { api, ApiError } from "@/lib/api";
 
 // Real candidate offers from a real connector search, the Decision
-// Council's advisory recommendation highlighted, and — the piece that was
-// missing — a genuine path from "I like this one" to a real cart write.
-// update_cart is R1 (reversible write): it never auto-executes, it always
-// needs this explicit approval, and what it writes is a real cart on the
-// connector's own site, not a payment through OrderGuard. Checkout finishes
-// on the connector's own site (checkout_url), never through OrderGuard's
-// Razorpay account, which only ever settles for OrderGuard's own merchant.
+// Council's advisory recommendation highlighted, and a genuine path from
+// "I want these" to a real cart write.
+//
+// Selection model, replacing the old per-item approve-and-write flow: rows
+// are SELECTED (pure local state, no request, no prompt), and one explicit
+// action at the bottom writes every selected item to the real cart in ONE
+// update_cart call. Two real reasons, both found live:
+//
+//   1. Approving item-by-item meant one full read-modify-write-verify round
+//      trip per item against the SAME cart, each one's pre-write read racing
+//      whatever the previous item's write was still settling into on
+//      Swiggy's side (2026-09-06). See swiggy_cart.py's own docstring.
+//   2. A per-item confirm step asked the user to approve the same decision N
+//      times to express one intent ("buy these five things").
+//
+// The R1 (reversible write) boundary is unchanged and still explicit: nothing
+// is written until the one button below is pressed, that press is what
+// approves the whole batch, and the ActionProposal records behind it are
+// still staged server-side per item so the audit chain names exactly what was
+// written. What changed is how many times a person has to say yes, not
+// whether they have to. This still never processes a payment — checkout
+// finishes on the connector's own site (checkout_url).
 
 interface Props {
   connectorId: string;
   result: ConnectorResult;
   council: CouncilResult | null;
   // Fired once, right when a real cart write actually succeeds — never
-  // speculatively, never before the real approveCartAction response comes
-  // back. Lets a page-level parent collect "which connectors have at
-  // least one real approved item" across every card and every mission
-  // turn in the session, so it can offer ONE consolidated checkout action
-  // instead of the same per-card link repeated on every approved card.
+  // speculatively, never before the real response comes back. Lets a
+  // page-level parent collect "which connectors have at least one real
+  // approved item" across every card and every mission turn in the session,
+  // so it can offer ONE consolidated checkout action instead of the same
+  // per-card link repeated on every approved card.
   onApproved?: (info: { connectorId: string; checkoutUrl: string; itemsWritten: number }) => void;
 }
 
-type ApprovalState =
+type Address = { id: string; address_line: string; category: string };
+
+type WriteState =
   | { phase: "idle" }
-  | { phase: "picking-address"; offer: ScoredOffer; addresses: { id: string; address_line: string; category: string }[] }
-  | { phase: "proposing"; offer: ScoredOffer }
-  | { phase: "awaiting-approval"; offer: ScoredOffer; proposalId: string; summary: string; addressId: string }
+  // Asked ONCE for the whole batch, never per item — and only when the
+  // search itself did not already tell us which address it was scoped to.
+  | { phase: "picking-address"; addresses: Address[] }
   | { phase: "executing" }
   | { phase: "done"; checkoutUrl: string; itemsWritten: number; preservedExisting: number; cartReadSkippedReason: string | null }
   | { phase: "error"; message: string; checkoutUrl?: string };
@@ -46,7 +63,9 @@ const MIN_QTY = 1;
 const MAX_QTY = 50; // matches ProposeCartActionRequest.quantity's own ge=1, le=50
 
 export function OfferApproval({ connectorId, result, council, onApproved }: Props) {
-  const [state, setState] = useState<ApprovalState>({ phase: "idle" });
+  const [state, setState] = useState<WriteState>({ phase: "idle" });
+  // Pure local selection — picking an item sends nothing and asks nothing.
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   // Per-offer, not global — comparing two pack sizes side by side shouldn't
   // force the same quantity on both. Lazily defaults to 1 per offer key.
   const [quantities, setQuantities] = useState<Record<string, number>>({});
@@ -57,6 +76,12 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
   const searchAddressId = result.payload.address_id;
 
   const recommendedKey = council?.recommended_id ?? null;
+  const busy = state.phase === "executing";
+  const selectedOffers = offers.filter((o) => selectedKeys.has(offerKey(o)));
+  const selectedTotalMinor = selectedOffers.reduce(
+    (sum, o) => sum + o.offer.price_minor * quantityFor(o), 0,
+  );
+  const currency = offers[0]?.offer.currency ?? "INR";
 
   function quantityFor(offer: ScoredOffer): number {
     return quantities[offerKey(offer)] ?? MIN_QTY;
@@ -67,77 +92,80 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
     setQuantities((q) => ({ ...q, [offerKey(offer)]: clamped }));
   }
 
-  async function startApproval(offer: ScoredOffer) {
-    setState({ phase: "proposing", offer });
-    try {
-      // These offers came from a search scoped to ONE real delivery
-      // address, and the variant ids in them only exist in the store
-      // serving it. Asking which address to deliver to, as if any saved
-      // address were equally valid, is how F-036/F-048 happened: picking a
-      // different one makes every id unsellable, and Swiggy's answer to
-      // that is to empty the whole cart. When the search told us which
-      // address it used, that is the address — there is nothing to ask.
-      if (searchAddressId) {
-        await proposeAndApprove(offer, searchAddressId);
-        return;
-      }
-      const addrs = await api.connectorAddresses(connectorId);
-      if (addrs.addresses.length === 1) {
-        await proposeAndApprove(offer, addrs.addresses[0].id);
-      } else {
-        setState({ phase: "picking-address", offer, addresses: addrs.addresses });
-      }
-    } catch (err) {
-      setState({
-        phase: "error",
-        message: err instanceof ApiError ? err.message : String(err),
-        checkoutUrl: err instanceof ApiError ? err.checkoutUrl : undefined,
-      });
-    }
+  function toggleSelected(offer: ScoredOffer) {
+    const key = offerKey(offer);
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   }
 
-  async function proposeAndApprove(offer: ScoredOffer, addressId: string) {
-    setState({ phase: "proposing", offer });
-    try {
-      const proposal = await api.proposeCartAction({
-        connectorId,
-        variantId: offer.offer.variant_id,
-        quantity: quantityFor(offer),
-        offerTitle: offer.offer.title,
-        offerPriceMinor: offer.offer.price_minor,
-      });
-      setState({
-        phase: "awaiting-approval", offer, proposalId: proposal.proposal_id,
-        summary: proposal.summary, addressId,
-      });
-    } catch (err) {
-      setState({
-        phase: "error",
-        message: err instanceof ApiError ? err.message : String(err),
-        checkoutUrl: err instanceof ApiError ? err.checkoutUrl : undefined,
-      });
-    }
+  function failed(err: unknown) {
+    setState({
+      phase: "error",
+      message: err instanceof ApiError ? err.message : String(err),
+      checkoutUrl: err instanceof ApiError ? err.checkoutUrl : undefined,
+    });
   }
 
-  async function confirmApproval() {
-    if (state.phase !== "awaiting-approval") return;
+  async function startWrite() {
+    if (!selectedOffers.length) return;
+    // These offers came from a search scoped to ONE real delivery address,
+    // and the variant ids in them only exist in the store serving it.
+    // Asking which address to deliver to, as if any saved address were
+    // equally valid, is how F-036/F-048 happened: picking a different one
+    // makes every id unsellable, and Swiggy's answer to that is to empty the
+    // whole cart. When the search told us which address it used, that is the
+    // address — there is nothing to ask.
+    if (searchAddressId) {
+      await writeSelected(searchAddressId);
+      return;
+    }
     setState({ phase: "executing" });
     try {
-      const outcome = await api.approveCartAction(state.proposalId, state.addressId);
+      const addrs = await api.connectorAddresses(connectorId);
+      if (addrs.addresses.length === 1) {
+        await writeSelected(addrs.addresses[0].id);
+      } else {
+        setState({ phase: "picking-address", addresses: addrs.addresses });
+      }
+    } catch (err) {
+      failed(err);
+    }
+  }
+
+  async function writeSelected(addressId: string) {
+    const chosen = offers.filter((o) => selectedKeys.has(offerKey(o)));
+    if (!chosen.length) return;
+    setState({ phase: "executing" });
+    try {
+      // ONE request carrying the whole selected cart — no per-product
+      // staging round trip, and one real update_cart behind it. The audit
+      // chain still records each item individually, server-side, inside
+      // this same request.
+      const outcome = await api.writeCart({
+        connectorId,
+        addressId,
+        items: chosen.map((o) => ({
+          variantId: o.offer.variant_id,
+          quantity: quantityFor(o),
+          offerTitle: o.offer.title,
+          offerPriceMinor: o.offer.price_minor,
+        })),
+      });
       setState({
         phase: "done", checkoutUrl: outcome.checkout_url,
-        itemsWritten: outcome.items_written.length, preservedExisting: outcome.preserved_existing_items,
+        itemsWritten: outcome.items_written.length,
+        preservedExisting: outcome.preserved_existing_items,
         cartReadSkippedReason: outcome.cart_read_skipped_reason,
       });
       onApproved?.({
         connectorId, checkoutUrl: outcome.checkout_url, itemsWritten: outcome.items_written.length,
       });
     } catch (err) {
-      setState({
-        phase: "error",
-        message: err instanceof ApiError ? err.message : String(err),
-        checkoutUrl: err instanceof ApiError ? err.checkoutUrl : undefined,
-      });
+      failed(err);
     }
   }
 
@@ -156,8 +184,7 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
       <div className="flex flex-col gap-2 max-h-[360px] overflow-y-auto">
         {offers.map((o, i) => {
           const isRecommended = offerKey(o) === recommendedKey;
-          const busy = state.phase !== "idle" && state.phase !== "error"
-            && "offer" in state && offerKey(state.offer) === offerKey(o);
+          const isSelected = selectedKeys.has(offerKey(o));
           return (
             <motion.div
               key={offerKey(o)}
@@ -165,7 +192,11 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: i * 0.03 }}
               className={`border-2 px-3 py-2 flex items-center gap-3 ${
-                isRecommended ? "border-signal hard-signal" : "border-border"
+                isSelected
+                  ? "border-signal bg-signal/10"
+                  : isRecommended
+                    ? "border-signal hard-signal"
+                    : "border-border"
               }`}
             >
               <div className="flex-1 min-w-0">
@@ -204,15 +235,35 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
               <button
                 type="button"
                 disabled={!o.in_stock || busy}
-                onClick={() => startApproval(o)}
-                className="shrink-0 label-micro border-2 border-signal text-signal px-3 py-1.5 hover:bg-signal hover:text-background transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
+                aria-pressed={isSelected}
+                onClick={() => toggleSelected(o)}
+                className={`shrink-0 label-micro border-2 px-3 py-1.5 transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed ${
+                  isSelected
+                    ? "border-signal bg-signal text-background"
+                    : "border-signal text-signal hover:bg-signal hover:text-background"
+                }`}
               >
-                {busy ? "…" : "APPROVE →"}
+                {isSelected ? "✓ SELECTED" : "SELECT"}
               </button>
             </motion.div>
           );
         })}
       </div>
+
+      {selectedOffers.length > 0 && (state.phase === "idle" || state.phase === "error") && (
+        <div className="mt-3 border-t-2 border-signal pt-3 flex items-center justify-between gap-3 flex-wrap">
+          <div className="label-micro text-muted-foreground">
+            {selectedOffers.length} SELECTED · {formatMoney(selectedTotalMinor, currency)} — WRITTEN IN ONE CALL
+          </div>
+          <button
+            type="button"
+            onClick={startWrite}
+            className="label-micro border-2 border-signal bg-signal text-background px-3 py-1.5"
+          >
+            ADD {selectedOffers.length} ITEM{selectedOffers.length === 1 ? "" : "S"} TO REAL CART →
+          </button>
+        </div>
+      )}
 
       {state.phase === "picking-address" && (
         <div className="mt-3 border-t-2 border-border pt-3">
@@ -222,40 +273,13 @@ export function OfferApproval({ connectorId, result, council, onApproved }: Prop
               <button
                 key={a.id}
                 type="button"
-                onClick={() => proposeAndApprove(state.offer, a.id)}
+                onClick={() => writeSelected(a.id)}
                 className="text-left text-[12px] border border-border px-2.5 py-1.5 hover:border-signal transition-colors duration-150"
               >
                 <span className="label-micro text-muted-foreground mr-2">{a.category.toUpperCase()}</span>
                 {a.address_line}
               </button>
             ))}
-          </div>
-        </div>
-      )}
-
-      {state.phase === "proposing" && (
-        <div className="mt-3 label-micro text-warn animate-pulse">STAGING PROPOSAL…</div>
-      )}
-
-      {state.phase === "awaiting-approval" && (
-        <div className="mt-3 border-t-2 border-warn pt-3">
-          <div className="label-micro text-warn mb-2">R1 — REVERSIBLE WRITE — CONFIRM TO PROCEED</div>
-          <p className="text-[13px] mb-3">{state.summary}</p>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={confirmApproval}
-              className="label-micro border-2 border-warn bg-warn text-background px-3 py-1.5"
-            >
-              CONFIRM — WRITE REAL CART
-            </button>
-            <button
-              type="button"
-              onClick={() => setState({ phase: "idle" })}
-              className="label-micro border-2 border-border px-3 py-1.5 hover:border-destructive hover:text-destructive"
-            >
-              CANCEL
-            </button>
           </div>
         </div>
       )}
