@@ -1094,23 +1094,40 @@ async def create_payment_order(session_id: str) -> PaymentOrderResponse:
         # is the atomic gate: exactly one caller among any number racing
         # here gets True. See ledger.py's own docstring for the proof shape.
         if claim_order_creation(LEDGER, key):
-            # Minted only now, after gates.allow was already checked above,
-            # and bound to exactly the amount/currency/merchant/receipt the
-            # gates just verified -- not a fresh, independently-suppliable
-            # value. executor.execute_create_order loads these back FROM
-            # this row; it never takes them as separate call arguments.
-            cap = issue_capability(
-                CAPABILITY_DB, session_id=session_id, operation="razorpay.create_order",
-                merchant=expectation.merchant, amount_paise=entry.expected_amount_paise,
-                currency=entry.currency, receipt=key,
-                cart_hash=session.intent.confirmed_cart_hash or "",
-            )
+            # Real, found gap in THIS fix itself: everything from here to
+            # attach_order used to run partly outside any exception handling
+            # that releases the claim (issue_capability's own DB write, and
+            # CapabilityRejected, both fell through without ever calling
+            # mark_unknown/resolve_unknown). Any unexpected failure in that
+            # window left order_creation_claimed_at set forever with no path
+            # to release it -- this exact purchase could never be retried
+            # again, a worse failure mode than the race this claim exists to
+            # prevent. Everything that can fail between claiming and
+            # attaching is now inside one try, and every exception path
+            # resolves or releases the claim before returning control.
             try:
+                # Minted only now, after gates.allow was already checked
+                # above, and bound to exactly the amount/currency/merchant/
+                # receipt the gates just verified -- not a fresh,
+                # independently-suppliable value. executor.execute_create_order
+                # loads these back FROM this row; it never takes them as
+                # separate call arguments.
+                cap = issue_capability(
+                    CAPABILITY_DB, session_id=session_id, operation="razorpay.create_order",
+                    merchant=expectation.merchant, amount_paise=entry.expected_amount_paise,
+                    currency=entry.currency, receipt=key,
+                    cart_hash=session.intent.confirmed_cart_hash or "",
+                )
                 order = await executor.execute_create_order(CAPABILITY_DB, cap.capability_id)
             except CapabilityRejected as exc:
                 # A capability we just minted a moment ago failing to consume
-                # means something raced or clocks are unreasonable -- fail
-                # closed rather than fall back to any weaker path.
+                # means something raced or clocks are unreasonable.
+                # executor.execute_create_order's own docstring guarantees
+                # Razorpay is NEVER called on this path, so the claim can be
+                # released immediately -- no need to ask Razorpay to confirm
+                # something that provably never happened.
+                mark_unknown(LEDGER, key)
+                resolve_unknown(LEDGER, key, razorpay_order_id=None)
                 raise HTTPException(
                     status_code=500,
                     detail=f"could not authorize execution: {exc.reason}",
@@ -1129,6 +1146,22 @@ async def create_payment_order(session_id: str) -> PaymentOrderResponse:
                     raise HTTPException(
                         status_code=502,
                         detail=f"could not create the Razorpay order: {exc}",
+                    ) from exc
+            except Exception as exc:
+                # The gap this whole try/except closes: anything else here
+                # (a DB error minting the capability, any programming bug)
+                # leaves genuine uncertainty about whether Razorpay was
+                # reached. Treated exactly like a lost response -- ask
+                # Razorpay directly rather than assume either outcome -- so
+                # this purchase is never permanently stuck either way.
+                # Reported as a clean 500, not the raw exception leaking to
+                # the caller, once the claim itself is safely resolved.
+                mark_unknown(LEDGER, key)
+                entry = await _resolve_unknown_order(key)
+                if not entry.razorpay_order_id:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"unexpected error creating the order: {exc}",
                     ) from exc
             else:
                 attach_order(LEDGER, key, str(order["id"]))

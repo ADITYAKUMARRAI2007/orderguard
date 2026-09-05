@@ -65,6 +65,11 @@ class _FakeRazorpayClient:
         type(self).create_calls += 1
         return {"id": FAKE_ORDER_ID}
 
+    async def find_order_by_receipt(self, receipt):
+        # No create_order call was ever made against a fake failure that
+        # happened before reaching Razorpay -- genuinely nothing to find.
+        return None
+
     async def fetch_payment(self, payment_id):
         type(self).fetch_calls += 1
         return {
@@ -394,6 +399,46 @@ def test_an_unresolvable_timeout_never_lies_about_success(client, monkeypatch):
     session = app_module._SESSIONS[session_id]
     key = f"{session.intent.merchant}|{session.intent.intent_id}|purchase|{session.intent.confirmed_cart_hash}"
     assert get_entry(LEDGER, key).status is LedgerStatus.UNKNOWN   # honestly still uncertain
+
+
+# --- real, found gap: an unexpected exception used to permanently strand ---
+# --- a purchase, since claim_order_creation was never released on it -------
+
+def test_an_unexpected_exception_before_razorpay_is_reached_does_not_strand_the_purchase(client, monkeypatch):
+    """Regression, introduced by claim_order_creation itself: anything that
+    threw between claiming the right to call Razorpay and actually attaching
+    the order (a DB error minting the capability, any bug) used to leave
+    order_creation_claimed_at set forever with no release path -- worse than
+    the race it was meant to prevent, since the purchase could never be
+    retried again, by anyone, ever. A genuine retry after the failure must
+    still succeed."""
+    real_issue_capability = app_module.issue_capability
+    calls = {"n": 0}
+
+    def _flaky_issue_capability(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated unexpected DB failure minting the capability")
+        return real_issue_capability(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "issue_capability", _flaky_issue_capability)
+    session_id = _confirmed_session(client)
+
+    first = client.post(f"/api/sessions/{session_id}/payment/order")
+    assert first.status_code == 500   # find_order_by_receipt correctly finds nothing
+
+    from orderguard.app import LEDGER
+    from orderguard.ledger import LedgerStatus, get_entry
+    session = app_module._SESSIONS[session_id]
+    key = f"{session.intent.merchant}|{session.intent.intent_id}|purchase|{session.intent.confirmed_cart_hash}"
+    entry = get_entry(LEDGER, key)
+    assert entry.status is LedgerStatus.PENDING   # not stuck UNKNOWN
+    assert entry.order_creation_claimed_at is None   # claim released -- retry is possible
+
+    retried = client.post(f"/api/sessions/{session_id}/payment/order")
+    assert retried.status_code == 200
+    assert retried.json()["razorpay_order_id"] == FAKE_ORDER_ID
+    assert _FakeRazorpayClient.create_calls == 1   # the failed first attempt never reached Razorpay
 
 
 # --- the property that matters: 70 duplicate calls, one business effect -----
