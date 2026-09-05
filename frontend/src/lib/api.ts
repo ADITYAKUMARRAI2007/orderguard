@@ -362,6 +362,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ address_id: addressId }),
     }),
+  // Writes every staged proposal in ONE update_cart call instead of one
+  // call per item — closes the race where one item's write could land
+  // mid-propagation of a PREVIOUS item's still-settling write (2026-09-06).
+  // Only proposals for the same connector may be batched; the backend
+  // refuses (400) rather than guessing if they differ.
+  approveCartActionBatch: (proposalIds: string[], addressId: string) =>
+    request<{
+      status: string; items_written: { spin_id: string; quantity: number }[];
+      preserved_existing_items: number; checkout_url: string;
+      cart_read_skipped_reason: string | null;
+    }>("/api/agent/cart-actions/approve-batch", {
+      method: "POST",
+      body: JSON.stringify({ proposal_ids: proposalIds, address_id: addressId }),
+    }),
 
   // Runtime settings
   runtimeStatus: () => request<RuntimeStatus>("/api/runtime/status"),

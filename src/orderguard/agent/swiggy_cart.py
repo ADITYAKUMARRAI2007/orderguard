@@ -79,7 +79,7 @@ from dataclasses import dataclass
 
 from .mcp_direct_client import DirectMcpCallError, call_tool_directly
 
-__all__ = ["SwiggyCartError", "CartItem", "add_to_instamart_cart"]
+__all__ = ["SwiggyCartError", "CartItem", "add_to_instamart_cart", "add_items_to_instamart_cart"]
 
 _URL = "https://mcp.swiggy.com/im"
 
@@ -138,10 +138,41 @@ def _log_write_evidence(
 async def add_to_instamart_cart(
     *, bearer_token: str, address_id: str, spin_id: str, quantity: int,
 ) -> dict:
-    """Reads the real current cart, merges in the new item (replacing any
-    existing line for the same ``spin_id`` rather than duplicating it), and
-    writes the merged list back. Never blind-writes a single item.
+    """Single-item convenience wrapper over ``add_items_to_instamart_cart``
+    — see that function for the real read-modify-write-verify logic. Kept
+    as its own entry point so the many single-item call sites (and tests)
+    do not need to build a one-element list themselves.
     """
+    return await add_items_to_instamart_cart(
+        bearer_token=bearer_token, address_id=address_id,
+        items=[CartItem(spin_id=spin_id, quantity=quantity)],
+    )
+
+
+async def add_items_to_instamart_cart(
+    *, bearer_token: str, address_id: str, items: list[CartItem],
+) -> dict:
+    """Reads the real current cart ONCE, merges in every new item (each
+    replacing any existing line for the same ``spin_id`` rather than
+    duplicating it), and writes the merged list back in ONE ``update_cart``
+    call. Never blind-writes, and never splits one logical cart change into
+    several separate writes.
+
+    Real, found gap (2026-09-06): approving several items one at a time
+    used to mean one full read-modify-write-verify round trip PER item
+    against the SAME cart -- each item's pre-write read racing whatever the
+    PREVIOUS item's write was still settling into (see this module's own
+    docstring on propagation lag, and the "different items settle at
+    different speeds" finding from the same real incident). Every one of
+    those extra round trips was a fresh chance for the exact class of
+    write/read disagreement this module already had to fix once. Staging
+    every item the user has approved so far and writing them all in ONE
+    call removes that race entirely rather than trying to out-wait it.
+    """
+    if not items:
+        raise ValueError("add_items_to_instamart_cart needs at least one item")
+    new_spin_ids = {item.spin_id for item in items}
+
     cart_read_skipped_reason: str | None = None
     try:
         current = await call_tool_directly(
@@ -170,10 +201,10 @@ async def add_to_instamart_cart(
         for item in current.get("items", []):
             existing_spin = item.get("spinId")
             existing_qty = item.get("quantity")
-            if existing_spin and existing_spin != spin_id and isinstance(existing_qty, int):
+            if existing_spin and existing_spin not in new_spin_ids and isinstance(existing_qty, int):
                 existing.append(CartItem(spin_id=existing_spin, quantity=existing_qty))
 
-    merged = [*existing, CartItem(spin_id=spin_id, quantity=quantity)]
+    merged = [*existing, *items]
 
     write_arguments = {
         "selectedAddressId": address_id,
@@ -208,7 +239,7 @@ async def add_to_instamart_cart(
     # bounded, never indefinite, and a write that fails even this window
     # is reported exactly as before.
     confirmed: dict | None = None
-    landed = False
+    missing: list[CartItem] = []
     lost: list[str] = []
     attempts_left = 5
     while True:
@@ -228,10 +259,13 @@ async def add_to_instamart_cart(
             ) from exc
 
         confirmed_items = (confirmed or {}).get("items", [])
-        landed = any(
-            item.get("spinId") == spin_id and item.get("quantity") == quantity
-            for item in confirmed_items
-        )
+        missing = [
+            new_item for new_item in items
+            if not any(
+                item.get("spinId") == new_item.spin_id and item.get("quantity") == new_item.quantity
+                for item in confirmed_items
+            )
+        ]
         # A write that fails does not politely leave the rest of the cart
         # alone. Swiggy's own reply to a write containing one unsellable
         # item, captured live in F-036, is "no valid items remained, so the
@@ -244,27 +278,30 @@ async def add_to_instamart_cart(
         confirmed_spins = {item.get("spinId") for item in confirmed_items}
         lost = [item.spin_id for item in existing if item.spin_id not in confirmed_spins]
 
-        if (landed and not lost) or attempts_left <= 0:
+        if (not missing and not lost) or attempts_left <= 0:
             break
         await asyncio.sleep(3.0)
 
-    if not landed or lost:
+    if missing or lost:
         _log_write_evidence(current, write_arguments, write_reply, confirmed)
-    if not landed:
+    if missing:
+        names = ", ".join(item.spin_id for item in missing)
         detail = (
             f" It also removed {len(lost)} item(s) that were already in your "
             "cart before this attempt — Swiggy empties the whole cart when it "
             "rejects a write, so re-add them."
             if lost else ""
         )
+        plural = "s" if len(missing) != 1 else ""
         raise SwiggyCartError(
-            "update_cart returned no error, but the item is not actually in "
-            "the real cart when read back independently -- nothing was added."
+            f"update_cart returned no error, but item{plural} ({names}) "
+            "not actually in the real cart when read back independently -- "
+            f"nothing{' new' if len(missing) < len(items) else ''} was added."
             + detail
         )
     if lost:
         raise SwiggyCartError(
-            f"the item was added, but the write removed {len(lost)} item(s) "
+            f"the item(s) were added, but the write removed {len(lost)} item(s) "
             "that were already in your cart — Swiggy rebuilt the cart around "
             "this write instead of merging into it, so the cart no longer "
             "matches what you approved"

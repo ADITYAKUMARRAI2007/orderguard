@@ -467,6 +467,97 @@ def test_approve_cart_action_cannot_be_replayed_twice():
     assert second.status_code == 409
 
 
+def test_approve_batch_writes_the_whole_staged_cart_in_one_call():
+    """The real point: N proposals approved together must reach
+    add_items_to_instamart_cart as ONE call carrying every item, never N
+    separate calls -- that repeated round-tripping is what let one item's
+    write race another's still-settling state (2026-09-06)."""
+    from unittest.mock import AsyncMock, patch
+
+    p1 = client.post("/api/agent/cart-actions/propose", json={
+        "connector_id": "swiggy-instamart", "variant_id": "BATCH-A", "quantity": 1,
+        "offer_title": "Item A", "offer_price_minor": 100,
+    }).json()["proposal_id"]
+    p2 = client.post("/api/agent/cart-actions/propose", json={
+        "connector_id": "swiggy-instamart", "variant_id": "BATCH-B", "quantity": 2,
+        "offer_title": "Item B", "offer_price_minor": 200,
+    }).json()["proposal_id"]
+
+    with patch.object(app_module.ACCOUNTS, "bearer_token", return_value="fake-token"), \
+         patch.object(
+             app_module, "add_items_to_instamart_cart",
+             new=AsyncMock(return_value={
+                 "items_written": [
+                     {"spin_id": "BATCH-A", "quantity": 1}, {"spin_id": "BATCH-B", "quantity": 2},
+                 ],
+                 "preserved_existing_items": 0, "cart_read_skipped_reason": None,
+             }),
+         ) as mock_write:
+        resp = client.post("/api/agent/cart-actions/approve-batch", json={
+            "proposal_ids": [p1, p2], "address_id": "real-address",
+        })
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "SUCCEEDED"
+    assert len(body["items_written"]) == 2
+    assert body["checkout_url"] == "https://www.instamart.in/cart"
+    assert mock_write.call_count == 1  # exactly one write for both items
+    _args, kwargs = mock_write.call_args
+    sent_spins = {item.spin_id for item in kwargs["items"]}
+    assert sent_spins == {"BATCH-A", "BATCH-B"}
+    assert kwargs["address_id"] == "real-address"
+
+    # both proposals resolved together, not left half-approved
+    for proposal_id in (p1, p2):
+        replay = client.post(f"/api/agent/cart-actions/{proposal_id}/approve", json={"address_id": "x"})
+        assert replay.status_code == 409
+
+
+def test_approve_batch_rejects_a_proposal_that_is_not_pending_without_writing_anything():
+    from unittest.mock import AsyncMock, patch
+
+    p1 = client.post("/api/agent/cart-actions/propose", json={
+        "connector_id": "swiggy-instamart", "variant_id": "SOLO-A", "quantity": 1,
+        "offer_title": "Solo A", "offer_price_minor": 100,
+    }).json()["proposal_id"]
+    p2 = client.post("/api/agent/cart-actions/propose", json={
+        "connector_id": "swiggy-instamart", "variant_id": "SOLO-B", "quantity": 1,
+        "offer_title": "Solo B", "offer_price_minor": 100,
+    }).json()["proposal_id"]
+
+    with patch.object(app_module.ACCOUNTS, "bearer_token", return_value="fake-token"), \
+         patch.object(app_module, "add_to_instamart_cart", new=AsyncMock(return_value={
+             "items_written": [], "preserved_existing_items": 0, "cart_read_skipped_reason": None,
+         })):
+        client.post(f"/api/agent/cart-actions/{p1}/approve", json={"address_id": "a1"})  # p1 now SUCCEEDED
+
+    with patch.object(app_module, "add_items_to_instamart_cart", new=AsyncMock()) as mock_write:
+        resp = client.post("/api/agent/cart-actions/approve-batch", json={
+            "proposal_ids": [p1, p2], "address_id": "a1",
+        })
+
+    assert resp.status_code == 409
+    mock_write.assert_not_called()  # p2 must not have been written on its own
+
+
+def test_approve_batch_refuses_to_mix_connectors():
+    from unittest.mock import AsyncMock, patch
+
+    swiggy_proposal = client.post("/api/agent/cart-actions/propose", json={
+        "connector_id": "swiggy-instamart", "variant_id": "S1", "quantity": 1,
+        "offer_title": "S1", "offer_price_minor": 100,
+    }).json()["proposal_id"]
+
+    with patch.object(app_module, "add_items_to_instamart_cart", new=AsyncMock()) as mock_write:
+        resp = client.post("/api/agent/cart-actions/approve-batch", json={
+            "proposal_ids": [swiggy_proposal, "does-not-exist"], "address_id": "a1",
+        })
+
+    assert resp.status_code == 404  # the unknown id is caught before anything executes
+    mock_write.assert_not_called()
+
+
 def test_a_different_session_id_never_sees_another_tabs_conversation():
     from orderguard.agent.orchestrator import MissionStepResult
     from orderguard.agent.missions import MissionResult

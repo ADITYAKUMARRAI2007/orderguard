@@ -12,7 +12,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from orderguard.agent.mcp_direct_client import DirectMcpCallError
-from orderguard.agent.swiggy_cart import SwiggyCartError, add_to_instamart_cart
+from orderguard.agent.swiggy_cart import (
+    CartItem, SwiggyCartError, add_items_to_instamart_cart, add_to_instamart_cart,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -357,3 +359,77 @@ async def test_a_quantity_mismatch_on_read_back_also_fails_closed():
     with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
         with pytest.raises(SwiggyCartError, match="not actually in the real cart"):
             await add_to_instamart_cart(bearer_token="tok", address_id="a1", spin_id="S1", quantity=5)
+
+
+# --- add_items_to_instamart_cart: the whole-cart, one-write path -----------
+
+async def test_multiple_items_are_written_in_exactly_one_update_cart_call():
+    """The real point of batching: N approved items must cost exactly one
+    get_cart and one update_cart round trip, never N of each -- that
+    repeated round-tripping against the SAME cart is what let one item's
+    write race another item's still-settling state (2026-09-06)."""
+    _, fake_call = _stateful_server([])
+    calls = []
+
+    async def tracking_call(*, url, bearer_token, tool_name, arguments):
+        calls.append(tool_name)
+        return await fake_call(url=url, bearer_token=bearer_token, tool_name=tool_name, arguments=arguments)
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=tracking_call):
+        result = await add_items_to_instamart_cart(
+            bearer_token="tok", address_id="addr1",
+            items=[
+                CartItem(spin_id="A", quantity=1),
+                CartItem(spin_id="B", quantity=2),
+                CartItem(spin_id="C", quantity=3),
+            ],
+        )
+
+    assert calls.count("update_cart") == 1
+    assert calls.count("get_cart") == 2  # one pre-write read, one verifying read-back
+    written = {i["spin_id"]: i["quantity"] for i in result["items_written"]}
+    assert written == {"A": 1, "B": 2, "C": 3}
+
+
+async def test_batched_items_preserve_whatever_else_was_already_in_the_cart():
+    _, fake_call = _stateful_server([{"spinId": "EXISTING", "quantity": 1}])
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
+        result = await add_items_to_instamart_cart(
+            bearer_token="tok", address_id="addr1",
+            items=[CartItem(spin_id="NEW1", quantity=1), CartItem(spin_id="NEW2", quantity=1)],
+        )
+
+    written_spins = {i["spin_id"] for i in result["items_written"]}
+    assert written_spins == {"EXISTING", "NEW1", "NEW2"}
+    assert result["preserved_existing_items"] == 1
+
+
+async def test_one_missing_item_in_a_batch_fails_the_whole_batch_closed():
+    """Real-world shape: two items sent together, only one actually lands
+    (e.g. one is unsellable). This must fail loudly and name which one is
+    missing -- never report a partial success as if everything landed."""
+    async def fake_call(*, url, bearer_token, tool_name, arguments):
+        if tool_name == "get_cart":
+            return {"items": [{"spinId": "GOOD", "quantity": 1}]}  # BAD never landed
+        return {"written": arguments}
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
+        with pytest.raises(SwiggyCartError, match="BAD"):
+            await add_items_to_instamart_cart(
+                bearer_token="tok", address_id="a1",
+                items=[CartItem(spin_id="GOOD", quantity=1), CartItem(spin_id="BAD", quantity=1)],
+            )
+
+
+async def test_add_to_instamart_cart_still_works_as_a_single_item_wrapper():
+    """Back-compat: the original single-item entry point must behave
+    identically now that it delegates to the list-based implementation."""
+    _, fake_call = _stateful_server([])
+
+    with patch("orderguard.agent.swiggy_cart.call_tool_directly", side_effect=fake_call):
+        result = await add_to_instamart_cart(
+            bearer_token="tok", address_id="addr1", spin_id="SOLO", quantity=4,
+        )
+
+    assert result["items_written"] == [{"spin_id": "SOLO", "quantity": 4}]

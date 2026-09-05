@@ -94,7 +94,7 @@ from .agent.normalizer import ConnectorPayloadError
 from .agent.orchestrator import (
     ConnectorProvenanceError, IneligibleConnectorSelectionError, run_agent_turn,
 )
-from .agent.swiggy_cart import SwiggyCartError, add_to_instamart_cart
+from .agent.swiggy_cart import CartItem, SwiggyCartError, add_items_to_instamart_cart, add_to_instamart_cart
 from .agent.runtime.api_runtime import AnthropicApiRuntime, CliManagedConnectorUnsupported
 from .agent.runtime.base import AgentRuntime, ImageInput
 from .agent.runtime.subscription_runtime import SubscriptionAgentRuntime, SubscriptionAuthFailed
@@ -2518,6 +2518,109 @@ async def approve_cart_action(proposal_id: str, request: ApproveCartActionReques
     })
     return {
         "status": proposal.status,
+        "items_written": result["items_written"],
+        "preserved_existing_items": result["preserved_existing_items"],
+        "cart_read_skipped_reason": result["cart_read_skipped_reason"],
+        "checkout_url": connector.checkout_url,
+    }
+
+
+class ApproveCartActionBatchRequest(BaseModel):
+    model_config = STRICT
+    proposal_ids: list[str] = Field(min_length=1, max_length=50)
+    address_id: str = Field(min_length=1, max_length=64)
+
+
+@app.post("/api/agent/cart-actions/approve-batch")
+async def approve_cart_action_batch(request: ApproveCartActionBatchRequest) -> dict:
+    """The whole-cart sibling of ``approve_cart_action``: every proposal
+    named in ``proposal_ids`` is written in ONE ``update_cart`` call, not
+    one call per item.
+
+    Real, found gap: approving several staged items one at a time meant one
+    full read-modify-write-verify round trip PER item against the SAME
+    cart — each item's pre-write read racing whatever the PREVIOUS item's
+    write was still settling into on Swiggy's side (see
+    ``swiggy_cart.py::add_items_to_instamart_cart``'s own docstring). This
+    endpoint removes that race by construction: the whole staged cart moves
+    in one write, one verified read-back, same as a single-item approval in
+    every other respect (still not a payment, still returns checkout_url
+    for the connector's own site).
+
+    Every proposal must already be PROPOSED and belong to the SAME
+    connector, checked before anything executes — a validation failure on
+    any one of them leaves every proposal untouched, never a partial batch.
+    """
+    proposals: list[ActionProposal] = []
+    for proposal_id in request.proposal_ids:
+        proposal = load_proposal(CART_PROPOSALS_DB, proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail=f"unknown or expired proposal {proposal_id!r}")
+        if proposal.status != "PROPOSED":
+            raise HTTPException(status_code=409, detail=f"proposal {proposal_id!r} is already {proposal.status}")
+        proposals.append(proposal)
+
+    connector_ids = {p.connector_id for p in proposals}
+    if len(connector_ids) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"cannot batch proposals across different connectors: {sorted(connector_ids)}",
+        )
+    connector_id = connector_ids.pop()
+    if connector_id != "swiggy-instamart":
+        raise HTTPException(
+            status_code=400,
+            detail=f"no batched cart-write execution wired up for {connector_id!r}",
+        )
+
+    for proposal in proposals:
+        proposal.status = next_status(proposal, user_approved=True)
+        if proposal.status != "EXECUTING":
+            raise HTTPException(
+                status_code=409,
+                detail=f"approval did not clear proposal {proposal.proposal_id!r} for execution",
+            )
+        save_proposal(CART_PROPOSALS_DB, proposal)
+
+    token = ACCOUNTS.bearer_token(connector_id)
+    if not token:
+        for proposal in proposals:
+            proposal.status = "FAILED"
+            save_proposal(CART_PROPOSALS_DB, proposal)
+        raise HTTPException(status_code=409, detail=f"{connector_id!r} is not connected")
+
+    connector = agent_connector_by_id(connector_id)
+
+    try:
+        result = await add_items_to_instamart_cart(
+            bearer_token=token, address_id=request.address_id,
+            items=[
+                CartItem(spin_id=p.arguments["variant_id"], quantity=p.arguments["quantity"])
+                for p in proposals
+            ],
+        )
+    except SwiggyCartError as exc:
+        for proposal in proposals:
+            proposal.status = "FAILED"
+            save_proposal(CART_PROPOSALS_DB, proposal)
+        append_event(AUDIT, "cart_action_batch_failed", {
+            "proposal_ids": request.proposal_ids, "reason": str(exc),
+        })
+        raise HTTPException(
+            status_code=502,
+            detail={"message": str(exc), "checkout_url": connector.checkout_url},
+        ) from None
+
+    for proposal in proposals:
+        proposal.status = "SUCCEEDED"
+        save_proposal(CART_PROPOSALS_DB, proposal)
+    append_event(AUDIT, "cart_action_batch_succeeded", {
+        "proposal_ids": request.proposal_ids, "connector_id": connector_id,
+        "items_written": result["items_written"], "preserved_existing_items": result["preserved_existing_items"],
+        "cart_read_skipped_reason": result["cart_read_skipped_reason"],
+    })
+    return {
+        "status": "SUCCEEDED",
         "items_written": result["items_written"],
         "preserved_existing_items": result["preserved_existing_items"],
         "cart_read_skipped_reason": result["cart_read_skipped_reason"],

@@ -1,7 +1,7 @@
 {
   "metadata": {
-    "commit": "9324e88285a6728832211341c512a24b86cdee63",
-    "timestamp": "2026-09-05T18:55:03.121500+00:00",
+    "commit": "dea8ef8f70e53fdb6ff83830277e1eede1be78dd",
+    "timestamp": "2026-09-05T19:25:33.405361+00:00",
     "seed": 20260831,
     "model_runtime": "deterministic-offline",
     "scenario_count": 18,
