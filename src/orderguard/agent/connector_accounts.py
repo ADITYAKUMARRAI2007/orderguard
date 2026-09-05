@@ -18,10 +18,17 @@ would need real authenticated-user ownership and isolation before this table
 (or the BYOK key store in ``runtime_settings.py``) could safely serve more
 than one person — that is explicitly not built here, and nothing here should
 be read as claiming otherwise.
+
+Same shared-SQLite-connection gap as ledger.py/capability.py (see
+their docstrings): db.py::make_engine's one StaticPool connection for
+":memory:"/file SQLite is unsafe for two real OS threads to call
+commit() on at the same instant. Guarded the same way, for the same
+reason.
 """
 
 from __future__ import annotations
 
+import threading
 import base64
 import hashlib
 import os
@@ -36,6 +43,9 @@ from sqlalchemy import Engine
 from sqlmodel import Field, Session, SQLModel, select
 
 from ..db import make_engine
+
+
+_CONNECTOR_ACCOUNTS_LOCK = threading.Lock()
 
 __all__ = [
     "LOCAL_PROFILE", "ConnectorAccount", "accounts_engine",
@@ -239,7 +249,7 @@ class ConnectorAccountStore:
             _now() + timedelta(seconds=expires_in_seconds)
             if expires_in_seconds is not None else None
         )
-        with Session(self._engine) as db:
+        with _CONNECTOR_ACCOUNTS_LOCK, Session(self._engine) as db:
             row = self._select(db, connector_id)
             if row is None:
                 row = ConnectorAccount(owner_ref=self._owner_ref, connector_id=connector_id)
@@ -257,7 +267,7 @@ class ConnectorAccountStore:
             db.commit()
 
     def disconnect(self, connector_id: str) -> None:
-        with Session(self._engine) as db:
+        with _CONNECTOR_ACCOUNTS_LOCK, Session(self._engine) as db:
             row = self._select(db, connector_id)
             if row is not None:
                 row.status = "DISCONNECTED"
@@ -281,7 +291,7 @@ class ConnectorAccountStore:
         updates an EXISTING account row; a connector with no stored token
         has nothing to correct here, and this method never creates a row
         or grants a connection on its own."""
-        with Session(self._engine) as db:
+        with _CONNECTOR_ACCOUNTS_LOCK, Session(self._engine) as db:
             row = self._select(db, connector_id)
             if row is None:
                 return
@@ -296,7 +306,7 @@ class ConnectorAccountStore:
         -- see FAILURE_LOG.md F-048. Only updates an existing account row,
         same as ``record_mcp_status``: a connector with no stored token has
         no delivery context to set a default for."""
-        with Session(self._engine) as db:
+        with _CONNECTOR_ACCOUNTS_LOCK, Session(self._engine) as db:
             row = self._select(db, connector_id)
             if row is None:
                 return
@@ -323,7 +333,7 @@ class ConnectorAccountStore:
         return row.last_mcp_status, row.last_mcp_checked_at
 
     def _get(self, connector_id: str) -> ConnectorAccount | None:
-        with Session(self._engine) as db:
+        with _CONNECTOR_ACCOUNTS_LOCK, Session(self._engine) as db:
             return self._select(db, connector_id)
 
     def _select(self, db: Session, connector_id: str) -> ConnectorAccount | None:

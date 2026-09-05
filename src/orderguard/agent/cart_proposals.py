@@ -13,10 +13,17 @@ FAILURE_LOG.md F-035.
 is also used by non-persisted, non-commerce proposal shapes (see
 attack_lab.py). This module is the persistence adapter for the one flavor
 that needs to survive a restart, not a replacement for the dataclass.
+
+Same shared-SQLite-connection gap as ledger.py/capability.py (see
+their docstrings): db.py::make_engine's one StaticPool connection for
+":memory:"/file SQLite is unsafe for two real OS threads to call
+commit() on at the same instant. Guarded the same way, for the same
+reason.
 """
 
 from __future__ import annotations
 
+import threading
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +33,9 @@ from sqlmodel import Field, Session, SQLModel, select
 
 from .lifecycle import ActionProposal
 from ..db import make_engine
+
+
+_CART_PROPOSALS_LOCK = threading.Lock()
 
 __all__ = ["cart_proposals_engine", "save_proposal", "load_proposal"]
 
@@ -59,7 +69,7 @@ def cart_proposals_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
 def save_proposal(engine: Engine, proposal: ActionProposal) -> None:
     """Upsert by proposal_id — called at creation and after every status
     change, so the stored row always matches the in-process object exactly."""
-    with Session(engine) as db:
+    with _CART_PROPOSALS_LOCK, Session(engine) as db:
         row = db.exec(
             select(CartProposalRecord).where(CartProposalRecord.proposal_id == proposal.proposal_id)
         ).first()
@@ -78,7 +88,7 @@ def save_proposal(engine: Engine, proposal: ActionProposal) -> None:
 
 
 def load_proposal(engine: Engine, proposal_id: str) -> ActionProposal | None:
-    with Session(engine) as db:
+    with _CART_PROPOSALS_LOCK, Session(engine) as db:
         row = db.exec(
             select(CartProposalRecord).where(CartProposalRecord.proposal_id == proposal_id)
         ).first()

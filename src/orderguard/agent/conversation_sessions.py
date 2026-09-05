@@ -12,10 +12,17 @@ silently wiped a user's in-progress conversation each time -- the agent
 with no visible cause. Same class of gap as every other table this project
 moved off process-local state onto ``db.py`` (FAILURE_LOG.md F-035); a
 redeploy is not rare enough here to keep treating it as an edge case.
+
+Same shared-SQLite-connection gap as ledger.py/capability.py (see
+their docstrings): db.py::make_engine's one StaticPool connection for
+":memory:"/file SQLite is unsafe for two real OS threads to call
+commit() on at the same instant. Guarded the same way, for the same
+reason.
 """
 
 from __future__ import annotations
 
+import threading
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +31,9 @@ from sqlalchemy import Engine
 from sqlmodel import Field, Session, SQLModel, select
 
 from ..db import make_engine
+
+
+_CONVERSATION_SESSIONS_LOCK = threading.Lock()
 
 __all__ = [
     "conversation_sessions_engine", "save_conversation_session", "load_conversation_session",
@@ -140,7 +150,7 @@ def save_conversation_session(
     attempted_connector_ids: list[str] | None = None,
     failed_connector_ids: list[str] | None = None,
 ) -> None:
-    with Session(engine) as db:
+    with _CONVERSATION_SESSIONS_LOCK, Session(engine) as db:
         row = db.exec(
             select(ConversationSessionRecord).where(
                 ConversationSessionRecord.session_id == session_id,
@@ -163,7 +173,7 @@ def save_conversation_session(
 
 
 def load_conversation_session(engine: Engine, session_id: str, category: str) -> dict | None:
-    with Session(engine) as db:
+    with _CONVERSATION_SESSIONS_LOCK, Session(engine) as db:
         row = db.exec(
             select(ConversationSessionRecord).where(
                 ConversationSessionRecord.session_id == session_id,
@@ -176,7 +186,7 @@ def load_conversation_session(engine: Engine, session_id: str, category: str) ->
 
 
 def was_image_ever_attached(engine: Engine, session_id: str, category: str) -> bool:
-    with Session(engine) as db:
+    with _CONVERSATION_SESSIONS_LOCK, Session(engine) as db:
         row = db.exec(
             select(ConversationSessionRecord).where(
                 ConversationSessionRecord.session_id == session_id,
@@ -187,7 +197,7 @@ def was_image_ever_attached(engine: Engine, session_id: str, category: str) -> b
 
 
 def ever_attempted_connector_ids(engine: Engine, session_id: str, category: str) -> frozenset[str]:
-    with Session(engine) as db:
+    with _CONVERSATION_SESSIONS_LOCK, Session(engine) as db:
         row = db.exec(
             select(ConversationSessionRecord).where(
                 ConversationSessionRecord.session_id == session_id,
@@ -200,7 +210,7 @@ def ever_attempted_connector_ids(engine: Engine, session_id: str, category: str)
 
 
 def ever_failed_connector_ids(engine: Engine, session_id: str, category: str) -> frozenset[str]:
-    with Session(engine) as db:
+    with _CONVERSATION_SESSIONS_LOCK, Session(engine) as db:
         row = db.exec(
             select(ConversationSessionRecord).where(
                 ConversationSessionRecord.session_id == session_id,

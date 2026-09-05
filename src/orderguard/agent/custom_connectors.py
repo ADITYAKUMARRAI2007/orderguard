@@ -9,10 +9,17 @@ needs one explicit enable plus a risk-tier assignment before
 ``connector_registry``/``eligibility`` will ever consider it eligible for
 routing. This is the opposite default from "list it, then trust it," on
 purpose.
+
+Same shared-SQLite-connection gap as ledger.py/capability.py (see
+their docstrings): db.py::make_engine's one StaticPool connection for
+":memory:"/file SQLite is unsafe for two real OS threads to call
+commit() on at the same instant. Guarded the same way, for the same
+reason.
 """
 
 from __future__ import annotations
 
+import threading
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +31,9 @@ from sqlmodel import Field, Session, SQLModel, select
 from ..db import make_engine
 from .ssrf_guard import assert_no_cross_host_redirect, assert_safe_url
 from .tools import ToolPermission
+
+
+_CUSTOM_CONNECTORS_LOCK = threading.Lock()
 
 __all__ = [
     "CustomConnector", "CustomConnectorTool", "custom_connectors_engine",
@@ -85,7 +95,7 @@ def custom_connectors_engine(path: Path | str = _DEFAULT_PATH) -> Engine:
 
 def register_custom_connector(engine: Engine, *, label: str, url: str, category: str = "CUSTOM") -> CustomConnector:
     assert_safe_url(url)
-    with Session(engine) as db:
+    with _CUSTOM_CONNECTORS_LOCK, Session(engine) as db:
         row = CustomConnector(label=label, url=url, category=category)
         db.add(row)
         db.commit()
@@ -101,7 +111,7 @@ async def discover_tools(
     use ``httpx.MockTransport`` instead of a real network call, matching
     ``commerce/shopify_mcp.py``'s existing test pattern.
     """
-    with Session(engine) as db:
+    with _CUSTOM_CONNECTORS_LOCK, Session(engine) as db:
         connector = db.get(CustomConnector, connector_id)
         if connector is None:
             raise KeyError(f"unknown custom connector id {connector_id}")
@@ -150,7 +160,7 @@ async def discover_tools(
             f"custom connector returned malformed tools/list: {exc}"
         ) from None
 
-    with Session(engine) as db:
+    with _CUSTOM_CONNECTORS_LOCK, Session(engine) as db:
         for name in names:
             exists = db.exec(
                 select(CustomConnectorTool).where(
@@ -170,7 +180,7 @@ def enable_tool(
 ) -> None:
     if risk_tier == "R3":
         raise ValueError("a custom connector tool may never be enabled at risk tier R3")
-    with Session(engine) as db:
+    with _CUSTOM_CONNECTORS_LOCK, Session(engine) as db:
         row = db.exec(
             select(CustomConnectorTool).where(
                 CustomConnectorTool.connector_id == connector_id,
@@ -187,7 +197,7 @@ def enable_tool(
 
 
 def enabled_tools(engine: Engine, connector_id: int) -> tuple[ToolPermission, ...]:
-    with Session(engine) as db:
+    with _CUSTOM_CONNECTORS_LOCK, Session(engine) as db:
         rows = db.exec(
             select(CustomConnectorTool).where(
                 CustomConnectorTool.connector_id == connector_id,

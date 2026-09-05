@@ -25,10 +25,17 @@ in the current request.
 
 Chat history is kept too, so a conversation survives a reload — but it is
 stored as display text and is never fed back to a gate.
+
+Same shared-SQLite-connection gap as ledger.py/capability.py (see
+their docstrings): db.py::make_engine's one StaticPool connection for
+":memory:"/file SQLite is unsafe for two real OS threads to call
+commit() on at the same instant. Guarded the same way, for the same
+reason.
 """
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,6 +43,9 @@ from sqlalchemy import Engine
 from sqlmodel import Field, Session, SQLModel, delete, select
 
 from .db import make_engine
+
+
+_MEMORY_LOCK = threading.Lock()
 
 __all__ = [
     "ChatTurn",
@@ -149,13 +159,13 @@ def remember_chat_turn(
 ) -> None:
     if role not in {"user", "assistant"}:
         raise ValueError(f"role must be user or assistant, got {role!r}")
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         db.add(ChatTurn(session_id=session_id, user_id=user_id, role=role, text=text))
         db.commit()
 
 
 def chat_history(engine: Engine, session_id: str, limit: int = 200) -> list[ChatTurn]:
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         return list(
             db.exec(
                 select(ChatTurn)
@@ -200,7 +210,7 @@ def remember_completed_order(
         variant_id=variant_id, title=title, quantity=quantity,
         unit_price_paise=unit_price_paise, requested_as=requested_as,
     )
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         db.add(order)
         db.commit()
         db.refresh(order)
@@ -208,7 +218,7 @@ def remember_completed_order(
 
 
 def recent_orders(engine: Engine, user_id: str, limit: int = 10) -> list[RememberedOrder]:
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         return list(
             db.exec(
                 select(RememberedOrder)
@@ -255,7 +265,7 @@ def remember_store(
     tools: tuple[str, ...] = (),
 ) -> SavedStore:
     """Save a shop that was verified shoppable. Saving twice is not an error."""
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         existing = db.exec(
             select(SavedStore).where(
                 SavedStore.user_id == user_id, SavedStore.domain == domain
@@ -276,7 +286,7 @@ def remember_store(
 
 
 def saved_stores(engine: Engine, user_id: str) -> list[SavedStore]:
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         return list(
             db.exec(
                 select(SavedStore)
@@ -287,7 +297,7 @@ def saved_stores(engine: Engine, user_id: str) -> list[SavedStore]:
 
 
 def forget_store(engine: Engine, user_id: str, domain: str) -> int:
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         result = db.exec(
             delete(SavedStore).where(
                 SavedStore.user_id == user_id, SavedStore.domain == domain
@@ -331,7 +341,7 @@ def set_preference(
         user_id=user_id, key=key, value=value, scope=scope,
         session_id=session_id if scope == "session" else "",
     )
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         db.add(preference)
         db.commit()
         db.refresh(preference)
@@ -340,7 +350,7 @@ def set_preference(
 
 def preferences(engine: Engine, user_id: str, session_id: str = "") -> dict[str, str]:
     """Current preferences. Session ones only apply inside their own session."""
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         rows = list(
             db.exec(
                 select(Preference)
@@ -357,7 +367,7 @@ def preferences(engine: Engine, user_id: str, session_id: str = "") -> dict[str,
 
 
 def forget_preference(engine: Engine, user_id: str, key: str) -> int:
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         result = db.exec(
             delete(Preference).where(
                 Preference.user_id == user_id, Preference.key == key
@@ -369,7 +379,7 @@ def forget_preference(engine: Engine, user_id: str, key: str) -> int:
 
 def forget_everything(engine: Engine, user_id: str) -> dict[str, int]:
     """Delete this user's memory. Offered plainly, because it has to be."""
-    with Session(engine) as db:
+    with _MEMORY_LOCK, Session(engine) as db:
         counts = {}
         for table in (Preference, RememberedOrder, ChatTurn, SavedStore):
             result = db.exec(delete(table).where(table.user_id == user_id))
