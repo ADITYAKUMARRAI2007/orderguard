@@ -1774,6 +1774,15 @@ class ConnectorCredentialRequest(BaseModel):
     auth_strategy: Literal["OAUTH_BEARER", "API_KEY", "STATIC_HEADER", "CUSTOM"] = "API_KEY"
     scopes: str = Field(default="", max_length=2_000)
     external_account_ref: str = Field(default="", max_length=500)
+    # Real, reproduced incident (2026-09-05): a token pushed through this
+    # endpoint with no expiry recorded looked "CONNECTED" forever on this
+    # side while Swiggy's own server-side treatment of it degraded after
+    # its real, documented 5-day lifetime (swiggy_oauth.py's own docstring:
+    # "Access tokens are 5 days... no refresh token in v1") -- reads kept
+    # working, writes silently stopped persisting, and nothing here ever
+    # flagged it. Optional so connectors with a genuinely non-expiring
+    # credential (a static API key) are unaffected.
+    expires_in_seconds: int | None = Field(default=None, ge=1, le=31_536_000)
 
 
 class CustomConnectorRequest(BaseModel):
@@ -2410,7 +2419,7 @@ def connect_with_credential(
     ACCOUNTS.store_token(
         connector_id,
         request.credential,
-        expires_in_seconds=None,
+        expires_in_seconds=request.expires_in_seconds,
         scopes=request.scopes,
         auth_strategy=request.auth_strategy,
         external_account_ref=request.external_account_ref,

@@ -117,6 +117,36 @@ def test_generic_credential_entry_masks_and_never_returns_the_secret():
     client.post("/api/connectors/github/disconnect")
 
 
+def test_generic_credential_entry_records_a_real_expiry_when_given_one():
+    """Regression for a real incident (2026-09-05): a manually-pushed
+    Swiggy token with no expiry recorded looked CONNECTED forever on our
+    side while Swiggy's real 5-day token lifetime (swiggy_oauth.py's own
+    docstring) quietly ran out underneath it -- reads kept working, writes
+    silently stopped persisting, and nothing here ever flagged it."""
+    resp = client.post("/api/connectors/github/credential", json={
+        "credential": "github-pat-with-a-real-expiry",
+        "auth_strategy": "OAUTH_BEARER",
+        "expires_in_seconds": 432_000,
+    })
+    assert resp.status_code == 200
+    row = app_module.ACCOUNTS._get("github")
+    assert row.expires_at is not None
+    client.post("/api/connectors/github/disconnect")
+
+
+def test_generic_credential_entry_still_defaults_to_no_expiry():
+    """A connector with a genuinely non-expiring credential (a static API
+    key) must be unaffected -- expiry is opt-in, not assumed."""
+    resp = client.post("/api/connectors/github/credential", json={
+        "credential": "github-pat-no-expiry",
+        "auth_strategy": "API_KEY",
+    })
+    assert resp.status_code == 200
+    row = app_module.ACCOUNTS._get("github")
+    assert row.expires_at is None
+    client.post("/api/connectors/github/disconnect")
+
+
 def test_custom_connector_registration_rejects_a_private_ip():
     resp = client.post("/api/connectors/custom", json={"label": "Evil", "url": "https://10.0.0.5/mcp"})
     assert resp.status_code == 400
